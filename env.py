@@ -5,6 +5,7 @@ import numpy as np
 from config import (
     DEFAULT_SEED,
     EPISODE_LENGTH,
+    MAX_AOI,
     M,
     N,
     PACKET_LOSS_LEVELS,
@@ -40,12 +41,13 @@ class SemanticSchedulingEnv:
             2. 生成离散动作空间并计算动作总数。
             3. 为每个传感器随机生成 A、C，并设定 W、V。
             4. 预计算每个传感器的稳态协方差 P_bar。
-            5. 初始化 AoI、信道丢包矩阵与状态维度。
+            5. 初始化 AoI 上限、信道丢包矩阵与状态维度。
         """
         self.n = N
         self.m = M
         self.ln = ln
         self.en = en
+        self.max_aoi = MAX_AOI
         self.episode_length = episode_length
         self.rng = np.random.default_rng(seed)
 
@@ -226,7 +228,7 @@ class SemanticSchedulingEnv:
 
         核心步骤:
             1. 将 action_id 解码为传感器-信道分配。
-            2. 对每个传感器按是否调度和丢包结果更新 AoI。
+            2. 对每个传感器按是否调度和丢包结果更新 AoI（并截断到 max_aoi）。
             3. 基于更新后的 AoI 计算所有传感器 MSE 并求和。
             4. 令 reward = -total_mse。
             5. 刷新下一个时隙信道状态并推进时间计数。
@@ -235,7 +237,7 @@ class SemanticSchedulingEnv:
 
         for sensor_idx, channel_id in enumerate(assignment):
             if channel_id == 0:
-                self.aoi[sensor_idx] += 1
+                self.aoi[sensor_idx] = min(self.aoi[sensor_idx] + 1, self.max_aoi)
                 continue
 
             channel_idx = channel_id - 1
@@ -244,7 +246,7 @@ class SemanticSchedulingEnv:
             if is_success:
                 self.aoi[sensor_idx] = 1
             else:
-                self.aoi[sensor_idx] += 1
+                self.aoi[sensor_idx] = min(self.aoi[sensor_idx] + 1, self.max_aoi)
 
         total_mse = 0.0
         for i in range(self.n):

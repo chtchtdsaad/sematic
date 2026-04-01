@@ -77,4 +77,7 @@ Remote_Estimation_RL/
 ├── utils.py     # 辅助工具：训练曲线可视化、日志记录
 ├── env.py       # 强化学习环境 (MDP 状态机)
 ├── agent.py     # 强化学习智能体 (DQN/DDPG, 网络定义)
+
+├── train.py      #强化学习训练、测试等
+
 └── main.py      # 主程序入口
