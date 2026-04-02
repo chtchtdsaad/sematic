@@ -5,6 +5,9 @@ from typing import Any
 from agent import ReplayBuffer
 from config import (
     BATCH_SIZE,
+    DDPG_REWARD_CLIP,
+    DDPG_REWARD_SCALE,
+    DDPG_WARMUP_STEPS,
     EPISODE_LENGTH,
     EPSILON_DECAY,
     EPSILON_MIN,
@@ -16,6 +19,27 @@ from config import (
     REPLAY_BUFFER_CAPACITY,
 )
 from utils import map_continuous_to_discrete
+
+
+def _normalize_state_for_ddpg(state, env):
+    """
+    作用:
+        对 DDPG 输入状态做尺度归一化，缓解数值尺度差异。
+
+    参数:
+        state: 原始状态向量。
+        env: 环境实例（提供 N、M、max_aoi、离散信道状态数）。
+
+    返回:
+        np.ndarray: 归一化后的状态向量。
+    """
+    import numpy as np
+
+    s = np.asarray(state, dtype=np.float32).copy()
+    n = env.n
+    s[:n] = s[:n] / float(env.max_aoi)
+    s[n:] = s[n:] / float(len(env.channel_bins) + 1)
+    return s
 
 
 def run_training(algo: str, env, agent, config: dict[str, Any] | None = None) -> list[float]:
@@ -57,13 +81,18 @@ def run_training(algo: str, env, agent, config: dict[str, Any] | None = None) ->
     noise_std = float(cfg.get("noise_std_start", NOISE_STD_START))
     noise_decay = float(cfg.get("noise_std_decay", NOISE_STD_DECAY))
     noise_min = float(cfg.get("noise_std_min", NOISE_STD_MIN))
+    ddpg_warmup_steps = int(cfg.get("ddpg_warmup_steps", DDPG_WARMUP_STEPS))
+    ddpg_reward_clip = float(cfg.get("ddpg_reward_clip", DDPG_REWARD_CLIP))
+    ddpg_reward_scale = float(cfg.get("ddpg_reward_scale", DDPG_REWARD_SCALE))
 
     buffer = ReplayBuffer(capacity=buffer_capacity)
     mse_history: list[float] = []
+    global_step = 0
 
     for episode in range(num_episodes):
         state = env.reset()
         total_reward = 0.0
+        episode_trained = False
 
         for _ in range(episode_length):
             if algo == "DQN":
@@ -71,16 +100,26 @@ def run_training(algo: str, env, agent, config: dict[str, Any] | None = None) ->
                 next_state, reward, done = env.step(action_id)
                 buffer.push(state, action_id, reward, next_state, done)
             else:
-                virtual_action = agent.select_action(state, noise_std)
+                state_norm = _normalize_state_for_ddpg(state, env)
+                virtual_action = agent.select_action(state_norm, noise_std)
                 action_id = map_continuous_to_discrete(virtual_action, env.action_space)
                 next_state, reward, done = env.step(action_id)
-                buffer.push(state, virtual_action, reward, next_state, done)
+                next_state_norm = _normalize_state_for_ddpg(next_state, env)
+                reward_train = max(-ddpg_reward_clip, min(ddpg_reward_clip, reward)) / ddpg_reward_scale
+                buffer.push(state_norm, virtual_action, reward_train, next_state_norm, done)
 
             state = next_state
             total_reward += reward
+            global_step += 1
 
-            if len(buffer) > batch_size:
+            if algo == "DQN":
+                ready_for_train = len(buffer) > batch_size
+            else:
+                ready_for_train = len(buffer) > batch_size and global_step > ddpg_warmup_steps
+
+            if ready_for_train:
                 agent.train_step(buffer, batch_size)
+                episode_trained = True
 
             if done:
                 break
@@ -93,7 +132,16 @@ def run_training(algo: str, env, agent, config: dict[str, Any] | None = None) ->
             info = f"epsilon={epsilon:.4f}"
         else:
             noise_std = max(noise_min, noise_std * noise_decay)
-            info = f"noise_std={noise_std:.4f}"
+            if episode_trained and hasattr(agent, "step_lr_decay"):
+                agent.step_lr_decay()
+            if hasattr(agent, "get_current_lrs"):
+                actor_lr, critic_lr = agent.get_current_lrs()
+                info = (
+                    f"noise_std={noise_std:.4f}, "
+                    f"actor_lr={actor_lr:.2e}, critic_lr={critic_lr:.2e}"
+                )
+            else:
+                info = f"noise_std={noise_std:.4f}"
 
         if (episode + 1) % verbose_interval == 0 or episode == 0:
             print(

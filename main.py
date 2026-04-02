@@ -11,6 +11,13 @@ from agent import DDPGAgent, DQNAgent
 from config import (
     BATCH_SIZE,
     DEFAULT_SEED,
+    DDPG_ACTOR_LR,
+    DDPG_ACTOR_LR_END,
+    DDPG_CRITIC_LR,
+    DDPG_CRITIC_LR_END,
+    DDPG_REWARD_CLIP,
+    DDPG_REWARD_SCALE,
+    DDPG_WARMUP_STEPS,
     EPISODE_LENGTH,
     EPSILON_DECAY,
     EPSILON_MIN,
@@ -25,6 +32,18 @@ from config import (
 from env import SemanticSchedulingEnv
 from train import run_training
 from utils import plot_learning_curve
+
+
+def _exp_decay_gamma(start_lr: float, end_lr: float, steps: int) -> float:
+    """
+    作用:
+        根据起止学习率和总步数计算指数衰减 gamma。
+    """
+    if steps <= 0 or start_lr <= 0 or end_lr <= 0:
+        return 1.0
+    if end_lr >= start_lr:
+        return 1.0
+    return (end_lr / start_lr) ** (1.0 / steps)
 
 
 def parse_args() -> argparse.Namespace:
@@ -95,6 +114,9 @@ def build_train_config(args: argparse.Namespace) -> dict:
         "noise_std_start": NOISE_STD_START,
         "noise_std_decay": NOISE_STD_DECAY,
         "noise_std_min": NOISE_STD_MIN,
+        "ddpg_warmup_steps": DDPG_WARMUP_STEPS,
+        "ddpg_reward_clip": DDPG_REWARD_CLIP,
+        "ddpg_reward_scale": DDPG_REWARD_SCALE,
         "verbose_interval": 10,
     }
 
@@ -131,7 +153,26 @@ def main() -> None:
     if args.algo == "DQN":
         agent = DQNAgent(state_dim=env.state_dim, num_actions=env.num_actions)
     else:
-        agent = DDPGAgent(state_dim=env.state_dim, action_dim=N)
+        actor_gamma = _exp_decay_gamma(
+            start_lr=DDPG_ACTOR_LR,
+            end_lr=DDPG_ACTOR_LR_END,
+            steps=max(1, args.episodes),
+        )
+        critic_gamma = _exp_decay_gamma(
+            start_lr=DDPG_CRITIC_LR,
+            end_lr=DDPG_CRITIC_LR_END,
+            steps=max(1, args.episodes),
+        )
+        agent = DDPGAgent(
+            state_dim=env.state_dim,
+            action_dim=N,
+            actor_lr_decay_gamma=actor_gamma,
+            critic_lr_decay_gamma=critic_gamma,
+        )
+        print(
+            f"DDPG LR decay -> actor: {DDPG_ACTOR_LR:.1e}->{DDPG_ACTOR_LR_END:.1e}, "
+            f"critic: {DDPG_CRITIC_LR:.1e}->{DDPG_CRITIC_LR_END:.1e}"
+        )
 
     train_cfg = build_train_config(args)
     mse_history = run_training(args.algo, env, agent, train_cfg)

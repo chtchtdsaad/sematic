@@ -11,6 +11,7 @@ import torch.optim as optim
 
 from config import (
     BATCH_SIZE,
+    DDPG_GRAD_CLIP_NORM,
     DDPG_ACTOR_HIDDEN_DIMS,
     DDPG_ACTOR_LR,
     DDPG_CRITIC_HIDDEN_DIMS,
@@ -324,6 +325,9 @@ class DDPGAgent:
         tau: float = DDPG_TAU,
         actor_lr: float = DDPG_ACTOR_LR,
         critic_lr: float = DDPG_CRITIC_LR,
+        actor_lr_decay_gamma: float = 1.0,
+        critic_lr_decay_gamma: float = 1.0,
+        grad_clip_norm: float = DDPG_GRAD_CLIP_NORM,
     ) -> None:
         """
         作用:
@@ -343,6 +347,7 @@ class DDPGAgent:
         self.action_dim = action_dim
         self.gamma = gamma
         self.tau = tau
+        self.grad_clip_norm = grad_clip_norm
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.actor = ActorNet(state_dim, action_dim).to(self.device)
@@ -355,6 +360,12 @@ class DDPGAgent:
 
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=actor_lr)
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=critic_lr)
+        self.actor_scheduler = optim.lr_scheduler.ExponentialLR(
+            self.actor_optimizer, gamma=actor_lr_decay_gamma
+        )
+        self.critic_scheduler = optim.lr_scheduler.ExponentialLR(
+            self.critic_optimizer, gamma=critic_lr_decay_gamma
+        )
 
     def select_action(self, state: np.ndarray, noise_std: float) -> np.ndarray:
         """
@@ -414,11 +425,13 @@ class DDPGAgent:
         critic_loss = F.mse_loss(q_current_t, q_target_t)
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.grad_clip_norm)
         self.critic_optimizer.step()
 
         actor_loss = -self.critic(states_t, self.actor(states_t)).mean()
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.grad_clip_norm)
         self.actor_optimizer.step()
 
         self._soft_update(self.actor, self.actor_target, self.tau)
@@ -442,3 +455,33 @@ class DDPGAgent:
         """
         for target_param, source_param in zip(target_net.parameters(), source_net.parameters()):
             target_param.data.copy_(tau * source_param.data + (1.0 - tau) * target_param.data)
+
+    def step_lr_decay(self) -> None:
+        """
+        作用:
+            按预设指数衰减一步 Actor/Critic 学习率。
+
+        参数:
+            无。
+
+        返回:
+            None。
+        """
+        self.actor_scheduler.step()
+        self.critic_scheduler.step()
+
+    def get_current_lrs(self) -> tuple[float, float]:
+        """
+        作用:
+            读取当前 Actor/Critic 学习率。
+
+        参数:
+            无。
+
+        返回:
+            tuple[float, float]: (actor_lr, critic_lr)。
+        """
+        return (
+            float(self.actor_optimizer.param_groups[0]["lr"]),
+            float(self.critic_optimizer.param_groups[0]["lr"]),
+        )
