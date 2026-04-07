@@ -32,6 +32,7 @@ from config import (
     EPSILON_DECAY,
     EPSILON_MIN,
     EPSILON_START,
+    M,
     N,
     NOISE_STD_DECAY,
     NOISE_STD_MIN,
@@ -41,7 +42,12 @@ from config import (
 )
 from env import SemanticSchedulingEnv
 from train import load_checkpoint, run_evaluation, run_training
-from utils import plot_learning_curve, plot_sum_aoi_curve
+from utils import (
+    plot_compare_mse_curve,
+    plot_compare_sum_aoi_curve,
+    plot_learning_curve,
+    plot_sum_aoi_curve,
+)
 
 
 def _exp_decay_gamma(start_lr: float, end_lr: float, steps: int) -> float:
@@ -100,8 +106,14 @@ def parse_args() -> argparse.Namespace:
     # 设备选择
     parser.add_argument("--device", type=str, default="cpu", choices=["cpu", "cuda"], help="Force training device.")
 
-    # 是否仅评估
-    parser.add_argument("--eval", action="store_true", help="Run evaluation only (load model and test without training).")
+    # 模式选择（训练 / 评估）
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default="train",
+        choices=["train", "eval"],
+        help="Run mode: train or eval.",
+    )
 
     # 评估时模型路径
     parser.add_argument(
@@ -113,6 +125,29 @@ def parse_args() -> argparse.Namespace:
 
     # 评估轮数
     parser.add_argument("--eval-episodes", type=int, default=10, help="Number of episodes for evaluation mode.")
+
+    # 保存控制：1 保存，0 不保存
+    parser.add_argument(
+        "--save-checkpoints",
+        type=int,
+        default=1,
+        choices=[0, 1],
+        help="Whether to save checkpoints (1/0).",
+    )
+    parser.add_argument(
+        "--save-history",
+        type=int,
+        default=1,
+        choices=[0, 1],
+        help="Whether to save training histories for cross-algo compare (1/0).",
+    )
+    parser.add_argument(
+        "--save-plots",
+        type=int,
+        default=1,
+        choices=[0, 1],
+        help="Whether to save curves (single and compare plots) (1/0).",
+    )
 
     return parser.parse_args()
 
@@ -179,8 +214,8 @@ def build_train_config(args: argparse.Namespace) -> dict[str, object]:
         "verbose_interval": 10,
         "save_dir": "results/checkpoints",
         "save_prefix": f"{args.algo.lower()}_seed{args.seed}",
-        "save_best": True,
-        "save_last": True,
+        "save_best": bool(args.save_checkpoints),
+        "save_last": bool(args.save_checkpoints),
     }
 
 
@@ -238,7 +273,8 @@ def main() -> None:
     # 启动日志
     print(
         f"Starting training -> Algo: {args.algo}, Scale: (N=6, M=3), "
-        f"Seed: {args.seed}, Episodes: {args.episodes}, Device: {device}, EvalMode: {args.eval}"
+        f"Seed: {args.seed}, Episodes: {args.episodes}, Device: {device}, Mode: {args.mode}, "
+        f"Save(ckpt/history/plots)=({args.save_checkpoints}/{args.save_history}/{args.save_plots})"
     )
 
     # 初始化环境
@@ -282,7 +318,7 @@ def main() -> None:
     default_best_ckpt = Path("results/checkpoints") / f"{args.algo.lower()}_seed{args.seed}_best.pt"
 
     # ---------- 评估分支 ----------
-    if args.eval:
+    if args.mode == "eval":
         # 优先使用命令行路径，否则用默认 best
         ckpt_path = Path(args.model_path) if args.model_path else default_best_ckpt
 
@@ -304,15 +340,15 @@ def main() -> None:
             verbose=True,
         )
 
-        # 评估曲线路径
-        eval_mse_path = Path("results") / f"result_{args.algo}_seed{args.seed}_eval_mse.png"
-        eval_aoi_path = Path("results") / f"result_{args.algo}_seed{args.seed}_eval_sumaoi.png"
-
-        # 保存评估曲线
-        saved_eval_mse = plot_learning_curve(eval_result["mse_history"], args.algo, eval_mse_path, window=10)
-        saved_eval_aoi = plot_sum_aoi_curve(eval_result["sum_aoi_history"], args.algo, eval_aoi_path, window=10)
-
-        print(f"Evaluation finished. Curves saved to: {saved_eval_mse} and {saved_eval_aoi}")
+        # 按开关决定是否保存评估曲线
+        if bool(args.save_plots):
+            eval_mse_path = Path("results") / f"result_{args.algo}_seed{args.seed}_eval_mse.png"
+            eval_aoi_path = Path("results") / f"result_{args.algo}_seed{args.seed}_eval_sumaoi.png"
+            saved_eval_mse = plot_learning_curve(eval_result["mse_history"], args.algo, eval_mse_path, window=10)
+            saved_eval_aoi = plot_sum_aoi_curve(eval_result["sum_aoi_history"], args.algo, eval_aoi_path, window=10)
+            print(f"Evaluation finished. Curves saved to: {saved_eval_mse} and {saved_eval_aoi}")
+        else:
+            print("Evaluation finished. Plot saving is disabled by --save-plots 0.")
         return
 
     # ---------- 训练分支 ----------
@@ -326,21 +362,92 @@ def main() -> None:
     mse_history = train_result["mse_history"]
     sum_aoi_history = train_result["sum_aoi_history"]
 
-    # 曲线输出路径
-    mse_path = Path("results") / f"result_{args.algo}_seed{args.seed}.png"
-    aoi_path = Path("results") / f"result_{args.algo}_seed{args.seed}_sumaoi.png"
+    # 训练结果日志
+    if bool(args.save_plots):
+        mse_path = Path("results") / f"result_{args.algo}_seed{args.seed}.png"
+        aoi_path = Path("results") / f"result_{args.algo}_seed{args.seed}_sumaoi.png"
+        saved_mse_path = plot_learning_curve(mse_history, args.algo, mse_path, window=10)
+        saved_aoi_path = plot_sum_aoi_curve(sum_aoi_history, args.algo, aoi_path, window=10)
+        print(f"Training finished. MSE curve saved to: {saved_mse_path}")
+        print(f"Training finished. SumAoI curve saved to: {saved_aoi_path}")
+    else:
+        print("Training finished. Plot saving is disabled by --save-plots 0.")
 
-    # 保存训练曲线
-    saved_mse_path = plot_learning_curve(mse_history, args.algo, mse_path, window=10)
-    saved_aoi_path = plot_sum_aoi_curve(sum_aoi_history, args.algo, aoi_path, window=10)
+    if bool(args.save_checkpoints):
+        print(
+            "Checkpoints -> "
+            f"best: {train_result['best_model_path']}, last: {train_result['last_model_path']}"
+        )
+    else:
+        print("Checkpoint saving is disabled by --save-checkpoints 0.")
 
-    # 打印输出路径
-    print(f"Training finished. MSE curve saved to: {saved_mse_path}")
-    print(f"Training finished. SumAoI curve saved to: {saved_aoi_path}")
-    print(
-        "Checkpoints -> "
-        f"best: {train_result['best_model_path']}, last: {train_result['last_model_path']}"
+    # ---------- 双算法同配置对比图逻辑 ----------
+    # 仅当 history 保存开启时才执行
+    if not bool(args.save_history):
+        print("History saving is disabled by --save-history 0. Compare curve skipped.")
+        return
+
+    # 1) 先保存当前算法历史到标准化 npz 文件。
+    history_dir = Path("results/histories")
+    history_dir.mkdir(parents=True, exist_ok=True)
+    current_history_path = history_dir / f"{args.algo}_seed{args.seed}_ep{args.episodes}.npz"
+    np.savez(
+        current_history_path,
+        algo=args.algo,
+        n=N,
+        m=M,
+        seed=args.seed,
+        episodes=args.episodes,
+        mse_history=np.asarray(mse_history, dtype=np.float64),
+        sum_aoi_history=np.asarray(sum_aoi_history, dtype=np.float64),
     )
+    print(f"Saved training history: {current_history_path.resolve()}")
+
+    # 2) 查找另一个算法的历史文件。
+    other_algo = "DDPG" if args.algo == "DQN" else "DQN"
+    other_history_path = history_dir / f"{other_algo}_seed{args.seed}_ep{args.episodes}.npz"
+    if not other_history_path.exists():
+        print(
+            f"Compare curve skipped: counterpart history not found -> {other_history_path.resolve()}"
+        )
+        return
+
+    # 3) 读取并校验 N/M/seed/episodes 是否一致。
+    current_data = np.load(current_history_path, allow_pickle=True)
+    other_data = np.load(other_history_path, allow_pickle=True)
+    is_same_setup = (
+        int(current_data["n"]) == int(other_data["n"]) == N
+        and int(current_data["m"]) == int(other_data["m"]) == M
+        and int(current_data["seed"]) == int(other_data["seed"]) == args.seed
+        and int(current_data["episodes"]) == int(other_data["episodes"]) == args.episodes
+    )
+    if not is_same_setup:
+        print("Compare curve skipped: metadata mismatch (N/M/seed/episodes not equal).")
+        return
+
+    # 4) 根据文件中的算法标记，组装 DQN/DDPG 对齐后的曲线。
+    cur_algo = str(current_data["algo"])
+    if cur_algo == "DQN":
+        dqn_mse = current_data["mse_history"]
+        dqn_aoi = current_data["sum_aoi_history"]
+        ddpg_mse = other_data["mse_history"]
+        ddpg_aoi = other_data["sum_aoi_history"]
+    else:
+        dqn_mse = other_data["mse_history"]
+        dqn_aoi = other_data["sum_aoi_history"]
+        ddpg_mse = current_data["mse_history"]
+        ddpg_aoi = current_data["sum_aoi_history"]
+
+    # 5) 绘制并保存同图对比结果（需要开启 save_plots）。
+    if not bool(args.save_plots):
+        print("Compare curve skipped: --save-plots 0.")
+        return
+
+    cmp_mse_path = Path("results") / f"compare_DQN_DDPG_seed{args.seed}_ep{args.episodes}_mse.png"
+    cmp_aoi_path = Path("results") / f"compare_DQN_DDPG_seed{args.seed}_ep{args.episodes}_sumaoi.png"
+    saved_cmp_mse = plot_compare_mse_curve(dqn_mse, ddpg_mse, cmp_mse_path, window=10)
+    saved_cmp_aoi = plot_compare_sum_aoi_curve(dqn_aoi, ddpg_aoi, cmp_aoi_path, window=10)
+    print(f"Compare curves saved to: {saved_cmp_mse} and {saved_cmp_aoi}")
 
 
 if __name__ == "__main__":

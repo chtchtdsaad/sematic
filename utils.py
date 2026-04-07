@@ -18,7 +18,7 @@ import numpy as np
 _ACTION_MAP_CACHE: dict[int, dict[tuple[int, ...], int]] = {}
 
 # 可视化数值显示范围
-MSE_MIN, MSE_MAX = 50.0, 150.0
+MSE_MIN, MSE_MAX = 30.0, 100.0
 AOI_MIN, AOI_MAX = 5.0, 20.0
 
 
@@ -216,4 +216,106 @@ def plot_sum_aoi_curve(
     plt.savefig(save_path, dpi=200)
     plt.close()
 
+    return save_path.resolve()
+
+
+def plot_compare_mse_curve(
+    dqn_mse_history: list[float] | np.ndarray,
+    ddpg_mse_history: list[float] | np.ndarray,
+    save_path: str | Path,
+    window: int = 10,
+) -> Path:
+    """
+    作用:
+        在同一张图中对比 DQN 与 DDPG 的 Average Sum MSE 曲线。
+
+    输入格式:
+        dqn_mse_history: list[float] | np.ndarray，shape=(num_episodes,)
+        ddpg_mse_history: list[float] | np.ndarray，shape=(num_episodes,)
+        save_path: str | Path
+        window: int
+
+    输出格式:
+        Path（绝对路径）
+    """
+    # 转换并按统一范围裁剪
+    dqn_arr = np.clip(np.asarray(dqn_mse_history, dtype=np.float64), MSE_MIN, MSE_MAX)
+    ddpg_arr = np.clip(np.asarray(ddpg_mse_history, dtype=np.float64), MSE_MIN, MSE_MAX)
+
+    # 平滑曲线
+    dqn_smooth = moving_average(dqn_arr, window=window)
+    ddpg_smooth = moving_average(ddpg_arr, window=window)
+
+    # 路径处理
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # 绘图
+    plt.figure(figsize=(10, 6))
+    plt.plot(dqn_arr, label="DQN Raw", alpha=0.25, color="#1f77b4")
+    plt.plot(dqn_smooth, label=f"DQN MA(W={window})", linewidth=2.2, color="#1f77b4")
+    plt.plot(ddpg_arr, label="DDPG Raw", alpha=0.25, color="#ff7f0e")
+    plt.plot(ddpg_smooth, label=f"DDPG MA(W={window})", linewidth=2.2, color="#ff7f0e")
+    plt.xlabel("Episode")
+    plt.ylabel("Average Sum MSE")
+    plt.title("DQN vs DDPG - Average Sum MSE")
+    plt.ylim(MSE_MIN, MSE_MAX)
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+
+    # 保存输出
+    plt.savefig(save_path, dpi=200)
+    plt.close()
+    return save_path.resolve()
+
+
+def plot_compare_sum_aoi_curve(
+    dqn_sum_aoi_history: list[float] | np.ndarray,
+    ddpg_sum_aoi_history: list[float] | np.ndarray,
+    save_path: str | Path,
+    window: int = 10,
+) -> Path:
+    """
+    作用:
+        在同一张图中对比 DQN 与 DDPG 的 Average SumAoI 曲线。
+
+    输入格式:
+        dqn_sum_aoi_history: list[float] | np.ndarray，shape=(num_episodes,)
+        ddpg_sum_aoi_history: list[float] | np.ndarray，shape=(num_episodes,)
+        save_path: str | Path
+        window: int
+
+    输出格式:
+        Path（绝对路径）
+    """
+    # 转换并按统一范围裁剪
+    dqn_arr = np.clip(np.asarray(dqn_sum_aoi_history, dtype=np.float64), AOI_MIN, AOI_MAX)
+    ddpg_arr = np.clip(np.asarray(ddpg_sum_aoi_history, dtype=np.float64), AOI_MIN, AOI_MAX)
+
+    # 平滑曲线
+    dqn_smooth = moving_average(dqn_arr, window=window)
+    ddpg_smooth = moving_average(ddpg_arr, window=window)
+
+    # 路径处理
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # 绘图
+    plt.figure(figsize=(10, 6))
+    plt.plot(dqn_arr, label="DQN Raw", alpha=0.25, color="#1f77b4")
+    plt.plot(dqn_smooth, label=f"DQN MA(W={window})", linewidth=2.2, color="#1f77b4")
+    plt.plot(ddpg_arr, label="DDPG Raw", alpha=0.25, color="#ff7f0e")
+    plt.plot(ddpg_smooth, label=f"DDPG MA(W={window})", linewidth=2.2, color="#ff7f0e")
+    plt.xlabel("Episode")
+    plt.ylabel("Average SumAoI")
+    plt.title("DQN vs DDPG - Average SumAoI")
+    plt.ylim(AOI_MIN, AOI_MAX)
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+
+    # 保存输出
+    plt.savefig(save_path, dpi=200)
+    plt.close()
     return save_path.resolve()
