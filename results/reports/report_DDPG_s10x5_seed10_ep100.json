@@ -1,0 +1,23 @@
+{
+  "algo": "DDPG",
+  "scenario": "s10x5",
+  "n": 10,
+  "m": 5,
+  "seed": 10,
+  "episodes": 100,
+  "best_select_mode": "eval",
+  "best_eval_every": 10,
+  "best_eval_episodes": 3,
+  "update_interval": 1,
+  "ddpg_warmup_steps": 5000,
+  "ddpg_actor_lr": null,
+  "ddpg_critic_lr": null,
+  "noise_std_decay": null,
+  "best_metric_source": "eval",
+  "best_metric_value": 116.76708255959,
+  "best_model_path": null,
+  "last_model_path": null,
+  "tail_log_mse_span_ratio": 0.009392878000627719,
+  "late_stage_rising": false,
+  "train_seconds": 771.3305923999869
+}

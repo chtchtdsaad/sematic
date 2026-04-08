@@ -1,0 +1,20 @@
+{
+  "algo": "DDPG",
+  "seed": 9,
+  "episodes": 100,
+  "best_select_mode": "eval",
+  "best_eval_every": 10,
+  "best_eval_episodes": 3,
+  "update_interval": 1,
+  "ddpg_warmup_steps": 0,
+  "ddpg_actor_lr": null,
+  "ddpg_critic_lr": null,
+  "noise_std_decay": null,
+  "best_metric_source": "eval",
+  "best_metric_value": 55.08053104904144,
+  "best_model_path": "C:\\Users\\28681\\Desktop\\Kalman\\sematic\\results\\checkpoints\\ddpg_seed9_best.pt",
+  "last_model_path": "C:\\Users\\28681\\Desktop\\Kalman\\sematic\\results\\checkpoints\\ddpg_seed9_last.pt",
+  "tail_log_mse_span_ratio": 0.012106326124925411,
+  "late_stage_rising": false,
+  "train_seconds": 594.3820421000128
+}

@@ -15,13 +15,13 @@ from config import (
     DEFAULT_SEED,
     EPISODE_LENGTH,
     MAX_AOI,
-    M,
-    N,
     PACKET_LOSS_LEVELS,
     RAYLEIGH_SCALE_MAX,
     RAYLEIGH_SCALE_MIN,
     en,
     ln,
+    M,
+    N,
 )
 from core import (
     compute_mse_from_aoi,
@@ -52,7 +52,14 @@ class SemanticSchedulingEnv:
         - done: bool
     """
 
-    def __init__(self, seed: int = DEFAULT_SEED, episode_length: int = EPISODE_LENGTH) -> None:
+    def __init__(
+        self,
+        seed: int = DEFAULT_SEED,
+        episode_length: int = EPISODE_LENGTH,
+        n: int | None = None,
+        m: int | None = None,
+        build_action_space: bool = True,
+    ) -> None:
         """
         作用:
             初始化环境中的系统模型、动作空间、信道统计和缓存。
@@ -60,6 +67,9 @@ class SemanticSchedulingEnv:
         输入格式:
             seed: int，随机种子。
             episode_length: int，每个 episode 的最大步数。
+            n: int | None，传感器数量；None 时使用 config.N。
+            m: int | None，信道数量；None 时使用 config.M。
+            build_action_space: bool，是否构建离散 action_space（DQN 需要，DDPG 可关闭）。
 
         输出格式:
             None
@@ -72,10 +82,12 @@ class SemanticSchedulingEnv:
             5. 采样初始 H_t。
         """
         # 基础规模参数
-        self.n = N
-        self.m = M
+        self.n = int(N if n is None else n)
+        self.m = int(M if m is None else m)
         self.ln = ln
         self.en = en
+        if self.n <= 0 or self.m <= 0 or self.m > self.n:
+            raise ValueError(f"Invalid env scale: n={self.n}, m={self.m}.")
 
         # 环境运行参数
         self.max_aoi = int(MAX_AOI)
@@ -84,8 +96,10 @@ class SemanticSchedulingEnv:
         # 随机数生成器（统一来源，便于复现）
         self.rng = np.random.default_rng(seed)
 
-        # 离散动作空间（长度: N!/(N-M)!）
-        self.action_space = generate_action_space(self.n, self.m)
+        # 离散动作空间（长度: N!/(N-M)!）。
+        # - DQN: 需要 action_space + action_id。
+        # - DDPG(大场景): 可关闭，改为直接输入 assignment。
+        self.action_space = generate_action_space(self.n, self.m) if build_action_space else []
         self.num_actions = len(self.action_space)
 
         # 各传感器系统参数容器
@@ -369,6 +383,111 @@ class SemanticSchedulingEnv:
         # 返回状态向量
         return self._build_state()
 
+    def _validate_assignment(self, assignment: tuple[int, ...]) -> None:
+        """
+        作用:
+            校验 assignment 是否满足调度约束。
+
+        输入格式:
+            assignment: tuple[int,...]，长度必须为 n
+
+        输出格式:
+            None（非法时抛出 ValueError）
+        """
+        if len(assignment) != self.n:
+            raise ValueError(f"assignment length must be n={self.n}, got {len(assignment)}.")
+
+        # 每个信道编号 1..m 需各出现一次；0 表示未调度。
+        channel_counts = np.zeros(self.m + 1, dtype=np.int64)
+        for ch in assignment:
+            if ch < 0 or ch > self.m:
+                raise ValueError(f"assignment channel id out of range: {ch}, valid [0,{self.m}].")
+            if ch > 0:
+                channel_counts[ch] += 1
+
+        if not np.all(channel_counts[1:] == 1):
+            raise ValueError(
+                "assignment must schedule exactly one sensor per channel "
+                f"(counts={channel_counts[1:].tolist()})."
+            )
+
+    def _step_with_assignment(self, assignment: tuple[int, ...]) -> tuple[np.ndarray, float, bool]:
+        """
+        作用:
+            使用 assignment 执行一步环境转移（DDPG 推荐路径）。
+
+        输入格式:
+            assignment: tuple[int,...]，长度 n，元素取值 0..m
+
+        输出格式:
+            tuple[np.ndarray, float, bool]
+        """
+        # 按每个传感器更新 AoI。
+        for sensor_idx, channel_id in enumerate(assignment):
+            # 未调度：AoI + 1 并截断。
+            if channel_id == 0:
+                self.aoi[sensor_idx] = min(self.aoi[sensor_idx] + 1, self.max_aoi)
+                continue
+
+            # 被调度：取对应信道丢包率并采样成功/失败。
+            channel_idx = channel_id - 1
+            loss_prob = self.channel_loss[sensor_idx, channel_idx]
+            is_success = bool(self.rng.random() > loss_prob)
+
+            # 成功则重置为 1，失败则 +1 并截断。
+            if is_success:
+                self.aoi[sensor_idx] = 1
+            else:
+                self.aoi[sensor_idx] = min(self.aoi[sensor_idx] + 1, self.max_aoi)
+
+        # 计算总 MSE。
+        total_mse = 0.0
+        for i in range(self.n):
+            total_mse += compute_mse_from_aoi(
+                p_bar=self.p_bars[i],
+                a=self.a_mats[i],
+                w=self.w_mats[i],
+                aoi=int(self.aoi[i]),
+                a_powers=self.a_powers_cache[i],
+                noise_cov_sums=self.noise_cov_sums_cache[i],
+            )
+
+        # 奖励定义为负总 MSE。
+        reward = -float(total_mse)
+
+        # 刷新下一时刻信道状态。
+        self._refresh_channel_states()
+
+        # 时间推进。
+        self._t += 1
+
+        # done 判定。
+        done = self._t >= self.episode_length
+
+        # 构建 next_state。
+        next_state = self._build_state()
+
+        return next_state, reward, done
+
+    def step_assignment(self, assignment: np.ndarray | list[int] | tuple[int, ...]) -> tuple[np.ndarray, float, bool]:
+        """
+        作用:
+            直接使用 assignment 执行一步（用于 DDPG，避免离散动作全集）。
+
+        输入格式:
+            assignment: np.ndarray | list[int] | tuple[int,...]
+            - 展平后长度 n
+            - 元素取值 0..m，且每个 1..m 各出现一次
+
+        输出格式:
+            tuple[np.ndarray, float, bool]
+        """
+        # 输入统一为一维整数 tuple。
+        assignment_arr = np.asarray(assignment, dtype=np.int64).reshape(-1)
+        assignment_t = tuple(int(x) for x in assignment_arr.tolist())
+        self._validate_assignment(assignment_t)
+        return self._step_with_assignment(assignment_t)
+
     def step(self, action_id: int) -> tuple[np.ndarray, float, bool]:
         """
         作用:
@@ -390,55 +509,14 @@ class SemanticSchedulingEnv:
             4. reward = -total_mse。
             5. 采样下一个时刻信道状态，推进时间并返回。
         """
+        # action_space 未构建时，禁止 action_id 接口（DDPG 大场景走 step_assignment）。
+        if not self.action_space:
+            raise RuntimeError("action_space is not built. Use step_assignment for this environment.")
+
         # 解码动作编号 -> 分配 tuple（长度 N）
         assignment = decode_action(action_id, self.action_space)
-
-        # 按每个传感器更新 AoI
-        for sensor_idx, channel_id in enumerate(assignment):
-            # 未调度：AoI + 1 并截断
-            if channel_id == 0:
-                self.aoi[sensor_idx] = min(self.aoi[sensor_idx] + 1, self.max_aoi)
-                continue
-
-            # 被调度：取对应信道丢包率并采样成功/失败
-            channel_idx = channel_id - 1
-            loss_prob = self.channel_loss[sensor_idx, channel_idx]
-            is_success = bool(self.rng.random() > loss_prob)
-
-            # 成功则重置为 1，失败则 +1 并截断
-            if is_success:
-                self.aoi[sensor_idx] = 1
-            else:
-                self.aoi[sensor_idx] = min(self.aoi[sensor_idx] + 1, self.max_aoi)
-
-        # 计算总 MSE
-        total_mse = 0.0
-        for i in range(self.n):
-            total_mse += compute_mse_from_aoi(
-                p_bar=self.p_bars[i],
-                a=self.a_mats[i],
-                w=self.w_mats[i],
-                aoi=int(self.aoi[i]),
-                a_powers=self.a_powers_cache[i],
-                noise_cov_sums=self.noise_cov_sums_cache[i],
-            )
-
-        # 奖励定义为负总 MSE
-        reward = -float(total_mse)
-
-        # 刷新下一时刻信道状态
-        self._refresh_channel_states()
-
-        # 时间推进
-        self._t += 1
-
-        # done 判定
-        done = self._t >= self.episode_length
-
-        # 构建 next_state
-        next_state = self._build_state()
-
-        return next_state, reward, done
+        self._validate_assignment(assignment)
+        return self._step_with_assignment(assignment)
 
 
 if __name__ == "__main__":

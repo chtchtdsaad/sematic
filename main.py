@@ -1,378 +1,334 @@
-﻿"""
+"""
 程序入口（main.py）
 ===================
 职责：
 - 解析 CLI 参数
-- 初始化环境与智能体
-- 执行训练或评估
-- 保存 MSE/SumAoI 曲线
+- 组装环境/智能体/训练配置
+- 调用 train.py 执行训练或评估
+- 保存展示图、诊断图与实验报告
 """
 
 from __future__ import annotations
 
 import argparse
-import random
+import json
 from pathlib import Path
 
-import numpy as np
-import torch
-
-from agent import DDPGAgent, DQNAgent
-from config import (
-    BATCH_SIZE,
-    DEFAULT_SEED,
-    DDPG_ACTOR_LR,
-    DDPG_ACTOR_LR_END,
-    DDPG_CRITIC_LR,
-    DDPG_CRITIC_LR_END,
-    DDPG_REWARD_CLIP,
-    DDPG_REWARD_SCALE,
-    DDPG_WARMUP_STEPS,
-    EPISODE_LENGTH,
-    EPSILON_DECAY,
-    EPSILON_MIN,
-    EPSILON_START,
-    M,
-    N,
-    NOISE_STD_DECAY,
-    NOISE_STD_MIN,
-    NOISE_STD_START,
-    NUM_EPISODES,
-    REPLAY_BUFFER_CAPACITY,
-)
-from env import SemanticSchedulingEnv
+from config import DEFAULT_SEED, EPISODE_LENGTH, NUM_EPISODES, SCENARIO_PRESETS
 from train import load_checkpoint, run_evaluation, run_training
 from utils import (
-    plot_compare_mse_curve,
-    plot_compare_sum_aoi_curve,
     plot_learning_curve,
+    plot_learning_curve_raw,
+    plot_log_mse_curve,
     plot_sum_aoi_curve,
 )
-
-
-def _exp_decay_gamma(start_lr: float, end_lr: float, steps: int) -> float:
-    """
-    作用:
-        根据起止学习率计算指数衰减系数 gamma。
-
-    输入格式:
-        start_lr: float
-        end_lr: float
-        steps: int
-
-    输出格式:
-        float
-
-    核心步骤:
-        1. 处理非法输入与无需衰减情况。
-        2. 按 (end/start)^(1/steps) 计算 gamma。
-    """
-    # 无效参数或不需要衰减时返回 1.0
-    if steps <= 0 or start_lr <= 0 or end_lr <= 0:
-        return 1.0
-    if end_lr >= start_lr:
-        return 1.0
-
-    # 指数衰减系数
-    return (end_lr / start_lr) ** (1.0 / steps)
+from workflow import (
+    build_agent,
+    build_env,
+    build_train_config,
+    resolve_device,
+    save_history_and_compare,
+    set_global_seed,
+)
 
 
 def parse_args() -> argparse.Namespace:
     """
     作用:
-        解析命令行参数。
+        解析命令行参数并返回参数对象。
 
     输入格式:
         无
 
     输出格式:
         argparse.Namespace
-
-    核心步骤:
-        1. 注册训练/评估所需 CLI 参数。
-        2. 返回解析结果。
+        - 例如：args.algo(str), args.seed(int), args.episodes(int)
     """
+    # 创建参数解析器，统一管理训练/评估模式的命令行参数。
     parser = argparse.ArgumentParser(description="Baseline DQN/DDPG training CLI")
 
-    # 算法选择
+    # ---------- 基础参数 ----------
+    # 算法类型，离散动作 DQN 或连续动作映射 DDPG。
     parser.add_argument("--algo", type=str, required=True, choices=["DQN", "DDPG"], help="Training algorithm.")
-
-    # 随机种子
+    # 随机种子，输入为 int，影响环境和模型初始化。
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Random seed.")
-
-    # 训练轮数
+    # 训练轮次，输入为 int。
     parser.add_argument("--episodes", type=int, default=NUM_EPISODES, help="Number of episodes.")
-
-    # 设备选择
-    parser.add_argument("--device", type=str, default="cpu", choices=["cpu", "cuda"], help="Force training device.")
-
-    # 模式选择（训练 / 评估）
+    # 训练设备，输入为字符串 cpu/cuda。
+    parser.add_argument("--device", type=str, default="cpu", choices=["cpu", "cuda"], help="Force device.")
+    # 运行模式，train 为训练，eval 为纯评估。
+    parser.add_argument("--mode", type=str, default="train", choices=["train", "eval"], help="Run mode.")
+    # 场景预配置，默认 base(6x3)。
     parser.add_argument(
-        "--mode",
+        "--scenario",
         type=str,
-        default="train",
-        choices=["train", "eval"],
-        help="Run mode: train or eval.",
+        default="base",
+        choices=sorted(SCENARIO_PRESETS.keys()),
+        help="Preset scale scenario. base keeps original N/M.",
     )
 
-    # 评估时模型路径
+    # ---------- 评估参数 ----------
+    # 评估时可指定模型路径；为空则自动走默认 best 路径。
     parser.add_argument(
         "--model-path",
         type=str,
         default="",
-        help="Checkpoint path used in --eval mode. If empty, use default best checkpoint path.",
+        help="Checkpoint path used in eval mode. Empty means default best checkpoint.",
+    )
+    # 评估 episode 数量，输入为 int。
+    parser.add_argument("--eval-episodes", type=int, default=10, help="Eval episodes.")
+
+    # ---------- 保存开关 ----------
+    # 是否保存 checkpoint（1/0）。
+    parser.add_argument("--save-checkpoints", type=int, default=1, choices=[0, 1], help="Save checkpoints.")
+    # 是否保存训练历史并尝试生成 DQN/DDPG 对比图（1/0）。
+    parser.add_argument("--save-history", type=int, default=1, choices=[0, 1], help="Save history and compare.")
+    # 是否保存展示曲线（带裁剪）。（1/0）
+    parser.add_argument("--save-plots", type=int, default=1, choices=[0, 1], help="Save display plots.")
+    # 是否保存诊断曲线（raw MSE / log(MSE)）。（1/0）
+    parser.add_argument(
+        "--save-diagnostic-plots",
+        type=int,
+        default=0,
+        choices=[0, 1],
+        help="Save raw/log-MSE diagnostic plots.",
     )
 
-    # 评估轮数
-    parser.add_argument("--eval-episodes", type=int, default=10, help="Number of episodes for evaluation mode.")
-
-    # 保存控制：1 保存，0 不保存
+    # ---------- DDPG 可调参数（稳定性/时长实验） ----------
+    # 覆盖 DDPG warmup step 数，输入 int，可为 None。
+    parser.add_argument("--ddpg-warmup-steps", type=int, default=None, help="Override DDPG warmup steps.")
+    # 覆盖 DDPG actor 学习率，输入 float，可为 None。
+    parser.add_argument("--ddpg-actor-lr", type=float, default=None, help="Override DDPG actor lr.")
+    # 覆盖 DDPG critic 学习率，输入 float，可为 None。
+    parser.add_argument("--ddpg-critic-lr", type=float, default=None, help="Override DDPG critic lr.")
+    # 覆盖 DDPG 噪声衰减系数，输入 float，可为 None。
+    parser.add_argument("--noise-std-decay", type=float, default=None, help="Override DDPG noise decay.")
+    # 更新间隔，输入 int；1 表示每步更新，2 表示隔一步更新。
     parser.add_argument(
-        "--save-checkpoints",
+        "--update-interval",
         type=int,
         default=1,
-        choices=[0, 1],
-        help="Whether to save checkpoints (1/0).",
-    )
-    parser.add_argument(
-        "--save-history",
-        type=int,
-        default=1,
-        choices=[0, 1],
-        help="Whether to save training histories for cross-algo compare (1/0).",
-    )
-    parser.add_argument(
-        "--save-plots",
-        type=int,
-        default=1,
-        choices=[0, 1],
-        help="Whether to save curves (single and compare plots) (1/0).",
+        help="Optimization update interval in steps. 1 means update every step.",
     )
 
+    # ---------- best checkpoint 与稳定性诊断参数 ----------
+    # best 选择依据，train=按训练 episode 指标，eval=按 clean-eval 指标。
+    parser.add_argument(
+        "--best-select-mode",
+        type=str,
+        default="eval",
+        choices=["train", "eval"],
+        help="Best checkpoint selection metric source.",
+    )
+    # 每 K 个 episode 做一次 clean-eval（仅用于 best 选择）。
+    parser.add_argument("--best-eval-every", type=int, default=10, help="Run clean-eval every K episodes.")
+    # 每次 clean-eval 跑多少个 episode。
+    parser.add_argument("--best-eval-episodes", type=int, default=3, help="Episodes per clean-eval.")
+
+    # 输出 argparse.Namespace，供主流程读取。
     return parser.parse_args()
 
 
-def set_global_seed(seed: int) -> None:
+def _default_best_ckpt(algo: str, scenario: str, seed: int) -> Path:
     """
     作用:
-        固定 Python/NumPy/PyTorch 随机种子。
+        构造默认 best checkpoint 路径。
 
     输入格式:
+        algo: str（例如 "DQN" 或 "DDPG"）
         seed: int
 
     输出格式:
-        None
-
-    核心步骤:
-        1. 设置 random 与 numpy 种子。
-        2. 设置 torch CPU/CUDA 种子。
+        pathlib.Path
+        - 例如 results/checkpoints/ddpg_s20x10_seed7_best.pt
     """
-    # Python 原生随机
-    random.seed(seed)
-
-    # NumPy 随机
-    np.random.seed(seed)
-
-    # PyTorch CPU 随机
-    torch.manual_seed(seed)
-
-    # PyTorch CUDA 随机（若可用）
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+    # 统一按小写算法名拼接默认 best 文件路径。
+    return Path("results/checkpoints") / f"{algo.lower()}_{scenario}_seed{seed}_best.pt"
 
 
-def build_train_config(args: argparse.Namespace) -> dict[str, object]:
+def _save_run_report(args: argparse.Namespace, train_result: dict, env) -> Path:
     """
     作用:
-        生成训练配置字典并传给 run_training。
+        保存训练报告（JSON），便于后续复盘和横向对比。
 
     输入格式:
         args: argparse.Namespace
+        train_result: dict（run_training 返回的结果字典）
 
     输出格式:
-        dict[str, object]
-
-    核心步骤:
-        1. 读取 CLI 参数。
-        2. 拼接 config.py 默认超参数。
-        3. 返回配置字典。
+        pathlib.Path
+        - 报告文件的绝对路径
     """
-    return {
-        "num_episodes": args.episodes,
-        "episode_length": EPISODE_LENGTH,
-        "batch_size": BATCH_SIZE,
-        "buffer_capacity": REPLAY_BUFFER_CAPACITY,
-        "epsilon_start": EPSILON_START,
-        "epsilon_decay": EPSILON_DECAY,
-        "epsilon_min": EPSILON_MIN,
-        "noise_std_start": NOISE_STD_START,
-        "noise_std_decay": NOISE_STD_DECAY,
-        "noise_std_min": NOISE_STD_MIN,
-        "ddpg_warmup_steps": DDPG_WARMUP_STEPS,
-        "ddpg_reward_clip": DDPG_REWARD_CLIP,
-        "ddpg_reward_scale": DDPG_REWARD_SCALE,
-        "verbose_interval": 10,
-        "save_dir": "results/checkpoints",
-        "save_prefix": f"{args.algo.lower()}_seed{args.seed}",
-        "save_best": bool(args.save_checkpoints),
-        "save_last": bool(args.save_checkpoints),
+    # 报告目录：results/reports，不存在时自动创建。
+    report_dir = Path("results/reports")
+    report_dir.mkdir(parents=True, exist_ok=True)
+    # 报告命名格式：report_{algo}_seed{seed}_ep{episodes}.json
+    report_path = report_dir / f"report_{args.algo}_{args.scenario}_seed{args.seed}_ep{args.episodes}.json"
+
+    # 将本轮关键配置和关键指标写入结构化字典，便于脚本化统计。
+    payload = {
+        "algo": args.algo,
+        "scenario": str(args.scenario),
+        "n": int(env.n),
+        "m": int(env.m),
+        "seed": int(args.seed),
+        "episodes": int(args.episodes),
+        "best_select_mode": args.best_select_mode,
+        "best_eval_every": int(args.best_eval_every),
+        "best_eval_episodes": int(args.best_eval_episodes),
+        "update_interval": int(args.update_interval),
+        "ddpg_warmup_steps": args.ddpg_warmup_steps,
+        "ddpg_actor_lr": args.ddpg_actor_lr,
+        "ddpg_critic_lr": args.ddpg_critic_lr,
+        "noise_std_decay": args.noise_std_decay,
+        "best_metric_source": train_result.get("best_metric_source"),
+        "best_metric_value": train_result.get("best_metric_value"),
+        "best_model_path": train_result.get("best_model_path"),
+        "last_model_path": train_result.get("last_model_path"),
+        "train_seconds": train_result.get("train_seconds"),
     }
+    # 写盘为 UTF-8 JSON；ensure_ascii=False 保留中文可读性。
+    report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 返回绝对路径，方便上层日志直接打印。
+    return report_path.resolve()
 
 
-def resolve_device(device_arg: str) -> torch.device:
+def _plot_train_outputs(args: argparse.Namespace, train_result: dict) -> None:
     """
     作用:
-        将设备字符串解析为 torch.device 并校验可用性。
+        保存训练阶段的展示图和诊断图。
 
     输入格式:
-        device_arg: str，'cpu' 或 'cuda'
+        args: argparse.Namespace
+        train_result: dict（包含 mse_history、sum_aoi_history）
 
     输出格式:
-        torch.device
-
-    核心步骤:
-        1. 解析字符串为 torch.device。
-        2. 若请求 cuda 但不可用则抛错。
+        None
     """
-    # 解析设备
-    device = torch.device(device_arg)
+    # 从训练结果中提取两个历史序列。
+    mse_history = train_result["mse_history"]
+    sum_aoi_history = train_result["sum_aoi_history"]
 
-    # 可用性校验
-    if device.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA is requested by --device=cuda, but CUDA is not available.")
+    # 展示图关闭时直接返回，避免无意义绘图开销。
+    if not bool(args.save_plots):
+        print("Training finished. Plot saving is disabled by --save-plots 0.")
+        return
 
-    return device
+    # 展示图路径（裁剪版曲线）。
+    mse_path = Path("results") / f"result_{args.algo}_{args.scenario}_seed{args.seed}.png"
+    aoi_path = Path("results") / f"result_{args.algo}_{args.scenario}_seed{args.seed}_sumaoi.png"
+    # 保存 MSE 展示图。
+    saved_mse_path = plot_learning_curve(mse_history, args.algo, mse_path, window=10)
+    # 保存 AoI 展示图。
+    saved_aoi_path = plot_sum_aoi_curve(sum_aoi_history, args.algo, aoi_path, window=10)
+    print(f"Training finished. MSE display curve saved to: {saved_mse_path}")
+    print(f"Training finished. SumAoI display curve saved to: {saved_aoi_path}")
+
+    # 诊断图开关打开时，额外保存 raw MSE 与 log(MSE) 曲线。
+    if bool(args.save_diagnostic_plots):
+        raw_mse_path = Path("results") / f"result_{args.algo}_{args.scenario}_seed{args.seed}_raw_mse.png"
+        log_mse_path = Path("results") / f"result_{args.algo}_{args.scenario}_seed{args.seed}_log_mse.png"
+        saved_raw_path = plot_learning_curve_raw(mse_history, args.algo, raw_mse_path, window=10)
+        saved_log_path = plot_log_mse_curve(mse_history, args.algo, log_mse_path, window=10)
+        print(f"Raw/log MSE diagnostic curves saved to: {saved_raw_path} and {saved_log_path}")
+
+
+def _run_eval_mode(args: argparse.Namespace, env, agent, device) -> None:
+    """
+    作用:
+        执行评估流程，并按配置保存评估曲线。
+
+    输入格式:
+        args: argparse.Namespace
+        env: 环境实例（支持 reset/step）
+        agent: 智能体实例（DQNAgent 或 DDPGAgent）
+        device: torch.device
+
+    输出格式:
+        None
+    """
+    # 优先使用用户给定模型路径；为空时回退到默认 best 路径。
+    ckpt_path = Path(args.model_path) if args.model_path else _default_best_ckpt(args.algo, args.scenario, args.seed)
+    # 提前检查 checkpoint 是否存在，避免运行中断时信息不清晰。
+    if not ckpt_path.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {ckpt_path.resolve()}")
+
+    # 加载 checkpoint 到当前 agent。
+    meta = load_checkpoint(args.algo, agent, ckpt_path, map_location=device)
+    print(f"Loaded checkpoint: {ckpt_path.resolve()} | meta={meta}")
+
+    # 执行纯评估（不做训练更新）。
+    eval_result = run_evaluation(
+        args.algo,
+        env,
+        agent,
+        num_episodes=args.eval_episodes,
+        episode_length=EPISODE_LENGTH,
+        verbose=True,
+    )
+
+    # 根据开关保存评估曲线。
+    if bool(args.save_plots):
+        eval_mse_path = Path("results") / f"result_{args.algo}_{args.scenario}_seed{args.seed}_eval_mse.png"
+        eval_aoi_path = Path("results") / f"result_{args.algo}_{args.scenario}_seed{args.seed}_eval_sumaoi.png"
+        saved_eval_mse = plot_learning_curve(eval_result["mse_history"], args.algo, eval_mse_path, window=10)
+        saved_eval_aoi = plot_sum_aoi_curve(eval_result["sum_aoi_history"], args.algo, eval_aoi_path, window=10)
+        print(f"Evaluation finished. Curves saved to: {saved_eval_mse} and {saved_eval_aoi}")
+    else:
+        print("Evaluation finished. Plot saving is disabled by --save-plots 0.")
 
 
 def main() -> None:
     """
     作用:
-        程序主入口：根据参数执行训练或评估。
+        程序主入口：执行训练或评估，并输出关键诊断信息。
 
     输入格式:
-        无
+        无（参数从 CLI 读取）
 
     输出格式:
         None
-
-    核心步骤:
-        1. 解析参数并设置随机种子。
-        2. 初始化环境与智能体。
-        3. --eval 分支加载模型并评估。
-        4. 否则执行训练并保存曲线。
     """
-    # 解析 CLI 参数
+    # 解析命令行参数。
     args = parse_args()
-
-    # 设置随机种子
+    # 固定随机种子，提升实验复现实验一致性。
     set_global_seed(args.seed)
-
-    # 解析训练设备
+    # 解析并校验设备参数。
     device = resolve_device(args.device)
 
-    # 启动日志
+    # 启动日志：打印本轮任务配置。
     print(
-        f"Starting training -> Algo: {args.algo}, Scale: (N=6, M=3), "
-        f"Seed: {args.seed}, Episodes: {args.episodes}, Device: {device}, Mode: {args.mode}, "
-        f"Save(ckpt/history/plots)=({args.save_checkpoints}/{args.save_history}/{args.save_plots})"
+        f"Run -> Algo: {args.algo}, Scenario: {args.scenario}, Seed: {args.seed}, Episodes: {args.episodes}, "
+        f"Device: {device}, Mode: {args.mode}, "
+        f"Save(ckpt/history/plots/diag)=({args.save_checkpoints}/{args.save_history}/{args.save_plots}/{args.save_diagnostic_plots})"
     )
 
-    # 初始化环境
-    env = SemanticSchedulingEnv(seed=args.seed)
+    # 当前策略：非 base 场景仅支持 DDPG。
+    if args.algo == "DQN" and args.scenario != "base":
+        raise ValueError("DQN currently supports only --scenario base. Use DDPG for s10x5/s20x10.")
 
-    # 初始化智能体
-    if args.algo == "DQN":
-        # DQN 智能体
-        agent = DQNAgent(state_dim=env.state_dim, num_actions=env.num_actions, device=device)
-    else:
-        # 计算 DDPG actor 的 LR 衰减系数
-        actor_gamma = _exp_decay_gamma(
-            start_lr=DDPG_ACTOR_LR,
-            end_lr=DDPG_ACTOR_LR_END,
-            steps=max(1, args.episodes),
-        )
+    # 构建环境对象（按场景规模与算法类型）。
+    env = build_env(seed=args.seed, scenario=str(args.scenario), algo=str(args.algo))
+    # 构建智能体对象，并获取构建说明字符串。
+    agent, agent_info = build_agent(args=args, env=env, device=device)
+    print(agent_info)
 
-        # 计算 DDPG critic 的 LR 衰减系数
-        critic_gamma = _exp_decay_gamma(
-            start_lr=DDPG_CRITIC_LR,
-            end_lr=DDPG_CRITIC_LR_END,
-            steps=max(1, args.episodes),
-        )
-
-        # DDPG 智能体
-        agent = DDPGAgent(
-            state_dim=env.state_dim,
-            action_dim=N,
-            actor_lr_decay_gamma=actor_gamma,
-            critic_lr_decay_gamma=critic_gamma,
-            device=device,
-        )
-
-        # 输出 LR 衰减说明
-        print(
-            f"DDPG LR decay -> actor: {DDPG_ACTOR_LR:.1e}->{DDPG_ACTOR_LR_END:.1e}, "
-            f"critic: {DDPG_CRITIC_LR:.1e}->{DDPG_CRITIC_LR_END:.1e}"
-        )
-
-    # 默认 best checkpoint 路径
-    default_best_ckpt = Path("results/checkpoints") / f"{args.algo.lower()}_seed{args.seed}_best.pt"
-
-    # ---------- 评估分支 ----------
+    # 若是 eval 模式，直接走评估分支并返回。
     if args.mode == "eval":
-        # 优先使用命令行路径，否则用默认 best
-        ckpt_path = Path(args.model_path) if args.model_path else default_best_ckpt
-
-        # 检查 checkpoint 是否存在
-        if not ckpt_path.exists():
-            raise FileNotFoundError(f"Checkpoint not found: {ckpt_path.resolve()}")
-
-        # 加载参数
-        meta = load_checkpoint(args.algo, agent, ckpt_path, map_location=device)
-        print(f"Loaded checkpoint: {ckpt_path.resolve()} | meta={meta}")
-
-        # 运行评估
-        eval_result = run_evaluation(
-            args.algo,
-            env,
-            agent,
-            num_episodes=args.eval_episodes,
-            episode_length=EPISODE_LENGTH,
-            verbose=True,
-        )
-
-        # 按开关决定是否保存评估曲线
-        if bool(args.save_plots):
-            eval_mse_path = Path("results") / f"result_{args.algo}_seed{args.seed}_eval_mse.png"
-            eval_aoi_path = Path("results") / f"result_{args.algo}_seed{args.seed}_eval_sumaoi.png"
-            saved_eval_mse = plot_learning_curve(eval_result["mse_history"], args.algo, eval_mse_path, window=10)
-            saved_eval_aoi = plot_sum_aoi_curve(eval_result["sum_aoi_history"], args.algo, eval_aoi_path, window=10)
-            print(f"Evaluation finished. Curves saved to: {saved_eval_mse} and {saved_eval_aoi}")
-        else:
-            print("Evaluation finished. Plot saving is disabled by --save-plots 0.")
+        _run_eval_mode(args=args, env=env, agent=agent, device=device)
         return
 
-    # ---------- 训练分支 ----------
-    # 构建训练配置
+    # 组装训练配置字典。
     train_cfg = build_train_config(args)
-
-    # 执行训练
+    # 执行训练并获取结果。
     train_result = run_training(args.algo, env, agent, train_cfg)
 
-    # 读取训练曲线
-    mse_history = train_result["mse_history"]
-    sum_aoi_history = train_result["sum_aoi_history"]
+    # 保存展示图/诊断图。
+    _plot_train_outputs(args, train_result)
+    # 保存 JSON 训练报告。
+    report_path = _save_run_report(args, train_result, env)
 
-    # 训练结果日志
-    if bool(args.save_plots):
-        mse_path = Path("results") / f"result_{args.algo}_seed{args.seed}.png"
-        aoi_path = Path("results") / f"result_{args.algo}_seed{args.seed}_sumaoi.png"
-        saved_mse_path = plot_learning_curve(mse_history, args.algo, mse_path, window=10)
-        saved_aoi_path = plot_sum_aoi_curve(sum_aoi_history, args.algo, aoi_path, window=10)
-        print(f"Training finished. MSE curve saved to: {saved_mse_path}")
-        print(f"Training finished. SumAoI curve saved to: {saved_aoi_path}")
-    else:
-        print("Training finished. Plot saving is disabled by --save-plots 0.")
-
+    # 根据 checkpoint 开关打印不同说明。
     if bool(args.save_checkpoints):
         print(
             "Checkpoints -> "
@@ -381,74 +337,34 @@ def main() -> None:
     else:
         print("Checkpoint saving is disabled by --save-checkpoints 0.")
 
-    # ---------- 双算法同配置对比图逻辑 ----------
-    # 仅当 history 保存开启时才执行
+    # 打印关键训练摘要。
+    print(
+        "Summary -> "
+        f"best_source={train_result.get('best_metric_source')}, "
+        f"best_metric={train_result.get('best_metric_value')}, "
+        f"train_seconds={train_result.get('train_seconds'):.3f}"
+    )
+    print(f"Training report saved to: {report_path}")
+
+    # 历史保存关闭时，不生成跨算法对比图。
     if not bool(args.save_history):
         print("History saving is disabled by --save-history 0. Compare curve skipped.")
         return
 
-    # 1) 先保存当前算法历史到标准化 npz 文件。
-    history_dir = Path("results/histories")
-    history_dir.mkdir(parents=True, exist_ok=True)
-    current_history_path = history_dir / f"{args.algo}_seed{args.seed}_ep{args.episodes}.npz"
-    np.savez(
-        current_history_path,
-        algo=args.algo,
-        n=N,
-        m=M,
-        seed=args.seed,
-        episodes=args.episodes,
-        mse_history=np.asarray(mse_history, dtype=np.float64),
-        sum_aoi_history=np.asarray(sum_aoi_history, dtype=np.float64),
+    # 保存 history，并尝试生成同配置 DQN/DDPG 对比图。
+    save_history_and_compare(
+        algo=str(args.algo),
+        scenario=str(args.scenario),
+        n=int(env.n),
+        m=int(env.m),
+        seed=int(args.seed),
+        episodes=int(args.episodes),
+        mse_history=train_result["mse_history"],
+        sum_aoi_history=train_result["sum_aoi_history"],
+        save_plots=bool(args.save_plots),
     )
-    print(f"Saved training history: {current_history_path.resolve()}")
-
-    # 2) 查找另一个算法的历史文件。
-    other_algo = "DDPG" if args.algo == "DQN" else "DQN"
-    other_history_path = history_dir / f"{other_algo}_seed{args.seed}_ep{args.episodes}.npz"
-    if not other_history_path.exists():
-        print(
-            f"Compare curve skipped: counterpart history not found -> {other_history_path.resolve()}"
-        )
-        return
-
-    # 3) 读取并校验 N/M/seed/episodes 是否一致。
-    current_data = np.load(current_history_path, allow_pickle=True)
-    other_data = np.load(other_history_path, allow_pickle=True)
-    is_same_setup = (
-        int(current_data["n"]) == int(other_data["n"]) == N
-        and int(current_data["m"]) == int(other_data["m"]) == M
-        and int(current_data["seed"]) == int(other_data["seed"]) == args.seed
-        and int(current_data["episodes"]) == int(other_data["episodes"]) == args.episodes
-    )
-    if not is_same_setup:
-        print("Compare curve skipped: metadata mismatch (N/M/seed/episodes not equal).")
-        return
-
-    # 4) 根据文件中的算法标记，组装 DQN/DDPG 对齐后的曲线。
-    cur_algo = str(current_data["algo"])
-    if cur_algo == "DQN":
-        dqn_mse = current_data["mse_history"]
-        dqn_aoi = current_data["sum_aoi_history"]
-        ddpg_mse = other_data["mse_history"]
-        ddpg_aoi = other_data["sum_aoi_history"]
-    else:
-        dqn_mse = other_data["mse_history"]
-        dqn_aoi = other_data["sum_aoi_history"]
-        ddpg_mse = current_data["mse_history"]
-        ddpg_aoi = current_data["sum_aoi_history"]
-
-    # 5) 绘制并保存同图对比结果（需要开启 save_plots）。
-    if not bool(args.save_plots):
-        print("Compare curve skipped: --save-plots 0.")
-        return
-
-    cmp_mse_path = Path("results") / f"compare_DQN_DDPG_seed{args.seed}_ep{args.episodes}_mse.png"
-    cmp_aoi_path = Path("results") / f"compare_DQN_DDPG_seed{args.seed}_ep{args.episodes}_sumaoi.png"
-    saved_cmp_mse = plot_compare_mse_curve(dqn_mse, ddpg_mse, cmp_mse_path, window=10)
-    saved_cmp_aoi = plot_compare_sum_aoi_curve(dqn_aoi, ddpg_aoi, cmp_aoi_path, window=10)
-    print(f"Compare curves saved to: {saved_cmp_mse} and {saved_cmp_aoi}")
 
 
 if __name__ == "__main__":
+    # 脚本入口。
     main()

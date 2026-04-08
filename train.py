@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +32,7 @@ from config import (
     NUM_EPISODES,
     REPLAY_BUFFER_CAPACITY,
 )
-from utils import map_continuous_to_discrete
+from utils import map_continuous_to_assignment
 
 
 def _normalize_state_for_ddpg(state: np.ndarray, env) -> np.ndarray:
@@ -220,6 +221,9 @@ def run_training(algo: str, env, agent, config: dict[str, Any] | None = None) ->
           "best_mse": float | None,
           "best_model_path": str | None,
           "last_model_path": str | None,
+          "best_metric_source": str,
+          "best_metric_value": float | None,
+          "train_seconds": float,
         }
 
     核心步骤:
@@ -268,6 +272,19 @@ def run_training(algo: str, env, agent, config: dict[str, Any] | None = None) ->
     save_prefix = str(cfg.get("save_prefix", algo.lower()))
     save_best = bool(cfg.get("save_best", True))
     save_last = bool(cfg.get("save_last", True))
+    # best 选择模式：train=按训练 episode 指标；eval=按 clean-eval 指标。
+    best_select_mode = str(cfg.get("best_select_mode", "train")).lower()
+    # 防御性修正：若传入非法字符串，默认回退到 train 模式。
+    if best_select_mode not in {"train", "eval"}:
+        best_select_mode = "train"
+    # best-eval 触发间隔（单位：episode），最小为 1。
+    best_eval_every = max(1, int(cfg.get("best_eval_every", 10)))
+    # 每次 clean-eval 运行的 episode 数，最小为 1。
+    best_eval_episodes = max(1, int(cfg.get("best_eval_episodes", 3)))
+    # 参数更新间隔（单位：step），1 表示每步更新，2 表示隔步更新。
+    update_interval = max(1, int(cfg.get("update_interval", 1)))
+    # clean-eval 日志开关，默认关闭避免训练日志过多。
+    best_eval_verbose = bool(cfg.get("best_eval_verbose", False))
 
     # ---------- 训练容器 ----------
     buffer = ReplayBuffer(capacity=buffer_capacity)
@@ -277,8 +294,12 @@ def run_training(algo: str, env, agent, config: dict[str, Any] | None = None) ->
 
     global_step = 0
     best_mse = float("inf")
+    best_metric_source = "train"
+    best_metric_value = float("inf")
     best_model_path: Path | None = None
     last_model_path: Path | None = None
+    # 记录训练开始时间戳，最终用于统计 train_seconds。
+    train_start_ts = time.perf_counter()
 
     # ---------- episode 循环 ----------
     for episode in range(num_episodes):
@@ -309,11 +330,11 @@ def run_training(algo: str, env, agent, config: dict[str, Any] | None = None) ->
                 # 连续动作（shape=(N,)）
                 virtual_action = agent.select_action(state_norm, noise_std)
 
-                # 映射到离散 action_id
-                action_id = map_continuous_to_discrete(virtual_action, env.action_space)
+                # 连续动作映射为 assignment（长度 n，值域 0..m）。
+                assignment = map_continuous_to_assignment(virtual_action, n=env.n, m=env.m)
 
-                # 环境交互
-                next_state, reward, done = env.step(action_id)
+                # 环境交互（DDPG 直接走 assignment，不依赖离散 action_space）。
+                next_state, reward, done = env.step_assignment(assignment)
 
                 # next_state 同样归一化
                 next_state_norm = _normalize_state_for_ddpg(next_state, env)
@@ -344,7 +365,8 @@ def run_training(algo: str, env, agent, config: dict[str, Any] | None = None) ->
                 ready_for_train = (len(buffer) > batch_size) and (global_step > ddpg_warmup_steps)
 
             # 执行参数更新
-            if ready_for_train:
+            # update_interval 控制训练更新频率，兼顾稳定性与时长。
+            if ready_for_train and (global_step % update_interval == 0):
                 agent.train_step(buffer, batch_size)
                 episode_trained = True
 
@@ -364,19 +386,65 @@ def run_training(algo: str, env, agent, config: dict[str, Any] | None = None) ->
         mse_history.append(float(avg_mse))
         sum_aoi_history.append(float(avg_sum_aoi))
 
-        # 保存 best checkpoint
-        if save_best and avg_mse < best_mse:
-            best_mse = float(avg_mse)
-            best_model_path = save_checkpoint(
-                algo=algo,
-                agent=agent,
-                save_path=save_dir / f"{save_prefix}_best.pt",
-                meta={
-                    "episode": episode + 1,
-                    "avg_mse": float(avg_mse),
-                    "avg_sum_aoi": float(avg_sum_aoi),
-                },
-            )
+        # 统计 best 指标（checkpoint 是否落盘由 save_best 决定）
+        # eval 模式：使用 clean-eval mean_mse 作为 best 指标来源。
+        if best_select_mode == "eval":
+            # 到达评估间隔或训练末轮时触发 clean-eval。
+            need_eval = ((episode + 1) % best_eval_every == 0) or (episode + 1 == num_episodes)
+            if need_eval:
+                # 运行不带探索噪声的评估，输出 eval_result 字典。
+                eval_result = run_evaluation(
+                    algo=algo,
+                    env=env,
+                    agent=agent,
+                    num_episodes=best_eval_episodes,
+                    episode_length=episode_length,
+                    verbose=best_eval_verbose,
+                )
+                # 候选指标：clean-eval 的 mean_mse（float）。
+                candidate_metric = float(eval_result["mean_mse"])
+                # 指标更优则更新 best 记录。
+                if candidate_metric < best_metric_value:
+                    best_metric_value = candidate_metric
+                    best_mse = candidate_metric
+                    best_metric_source = "eval"
+                    # save_best=True 时，落盘 checkpoint；否则只更新内存指标。
+                    if save_best:
+                        best_model_path = save_checkpoint(
+                            algo=algo,
+                            agent=agent,
+                            save_path=save_dir / f"{save_prefix}_best.pt",
+                            meta={
+                                "episode": episode + 1,
+                                "avg_mse": float(avg_mse),
+                                "avg_sum_aoi": float(avg_sum_aoi),
+                                "best_metric_source": "eval",
+                                "best_metric_value": candidate_metric,
+                                "best_eval_episodes": best_eval_episodes,
+                            },
+                        )
+        else:
+            # train 模式：直接使用当前 episode 的 avg_mse 作为候选指标。
+            candidate_metric = float(avg_mse)
+            # 指标更优则更新 best 记录。
+            if candidate_metric < best_metric_value:
+                best_metric_value = candidate_metric
+                best_mse = candidate_metric
+                best_metric_source = "train"
+                # save_best=True 时，落盘 checkpoint；否则只更新内存指标。
+                if save_best:
+                    best_model_path = save_checkpoint(
+                        algo=algo,
+                        agent=agent,
+                        save_path=save_dir / f"{save_prefix}_best.pt",
+                        meta={
+                            "episode": episode + 1,
+                            "avg_mse": float(avg_mse),
+                            "avg_sum_aoi": float(avg_sum_aoi),
+                            "best_metric_source": "train",
+                            "best_metric_value": candidate_metric,
+                        },
+                        )
 
         # 更新探索参数
         if algo == "DQN":
@@ -413,8 +481,13 @@ def run_training(algo: str, env, agent, config: dict[str, Any] | None = None) ->
                 "episode": num_episodes,
                 "avg_mse": float(mse_history[-1]) if mse_history else None,
                 "avg_sum_aoi": float(sum_aoi_history[-1]) if sum_aoi_history else None,
+                "best_metric_source": best_metric_source,
+                "best_metric_value": float(best_metric_value) if np.isfinite(best_metric_value) else None,
             },
         )
+
+    # 训练总耗时（秒）。
+    train_seconds = float(time.perf_counter() - train_start_ts)
 
     return {
         "mse_history": mse_history,
@@ -422,6 +495,9 @@ def run_training(algo: str, env, agent, config: dict[str, Any] | None = None) ->
         "best_mse": float(best_mse) if np.isfinite(best_mse) else None,
         "best_model_path": str(best_model_path) if best_model_path is not None else None,
         "last_model_path": str(last_model_path) if last_model_path is not None else None,
+        "best_metric_source": best_metric_source,
+        "best_metric_value": float(best_metric_value) if np.isfinite(best_metric_value) else None,
+        "train_seconds": train_seconds,
     }
 
 
@@ -483,14 +559,15 @@ def run_evaluation(
             if algo == "DQN":
                 # 评估时 DQN 用贪心动作
                 action_id = agent.select_action(state, epsilon=0.0)
+                # DQN 使用离散 action_id 接口。
+                next_state, reward, done = env.step(action_id)
             else:
                 # DDPG 评估时用确定性动作（noise=0）
                 state_norm = _normalize_state_for_ddpg(state, env)
                 virtual_action = agent.select_action(state_norm, noise_std=0.0)
-                action_id = map_continuous_to_discrete(virtual_action, env.action_space)
-
-            # 环境交互
-            next_state, reward, done = env.step(action_id)
+                assignment = map_continuous_to_assignment(virtual_action, n=env.n, m=env.m)
+                # DDPG 评估同样直接走 assignment 接口。
+                next_state, reward, done = env.step_assignment(assignment)
             state = next_state
 
             # 累积统计

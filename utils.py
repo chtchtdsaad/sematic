@@ -18,8 +18,8 @@ import numpy as np
 _ACTION_MAP_CACHE: dict[int, dict[tuple[int, ...], int]] = {}
 
 # 可视化数值显示范围
-MSE_MIN, MSE_MAX = 30.0, 100.0
-AOI_MIN, AOI_MAX = 5.0, 20.0
+MSE_MIN, MSE_MAX = 50.0, 200.0
+AOI_MIN, AOI_MAX = 5.0, 25.0
 
 
 def map_continuous_to_discrete(virtual_action: np.ndarray, action_space: list[tuple[int, ...]]) -> int:
@@ -74,6 +74,46 @@ def map_continuous_to_discrete(virtual_action: np.ndarray, action_space: list[tu
         raise KeyError(f"mapped tuple {action_tuple_t} not found in action_space")
 
     return action_map[action_tuple_t]
+
+
+def map_continuous_to_assignment(virtual_action: np.ndarray, n: int, m: int) -> tuple[int, ...]:
+    """
+    作用:
+        将 DDPG 连续动作向量直接映射为 assignment（不依赖离散 action_space）。
+
+    输入格式:
+        virtual_action: np.ndarray[float], shape=(n,)
+        n: int，传感器数量
+        m: int，信道数量
+
+    输出格式:
+        tuple[int,...]，长度 n
+        - 0: 未调度
+        - 1..m: 分配到对应信道
+
+    核心步骤:
+        1. 对连续动作按值降序排序。
+        2. 选择 Top-m 传感器作为被调度集合。
+        3. 按排序位次赋予信道编号 1..m。
+    """
+    # 规模合法性检查。
+    if n <= 0 or m <= 0 or m > n:
+        raise ValueError(f"Invalid n/m for assignment mapping: n={n}, m={m}.")
+
+    # 连续动作转一维 float32。
+    v = np.asarray(virtual_action, dtype=np.float32).reshape(-1)
+    if v.shape[0] != n:
+        raise ValueError(f"virtual_action length must be {n}, got {v.shape[0]}.")
+
+    # 按值降序选取 Top-m。
+    top_indices = np.argsort(v)[-m:][::-1]
+
+    # 生成 assignment：Top-m 依次绑定信道 1..m，其余为 0。
+    assignment = [0] * n
+    for channel_id, sensor_idx in enumerate(top_indices, start=1):
+        assignment[int(sensor_idx)] = int(channel_id)
+
+    return tuple(assignment)
 
 
 def moving_average(values: list[float] | np.ndarray, window: int = 10) -> np.ndarray:
@@ -164,6 +204,118 @@ def plot_learning_curve(
     plt.savefig(save_path, dpi=200)
     plt.close()
 
+    return save_path.resolve()
+
+
+def plot_learning_curve_raw(
+    mse_history: list[float] | np.ndarray,
+    algo_name: str,
+    save_path: str | Path,
+    window: int = 10,
+) -> Path:
+    """
+    作用:
+        绘制并保存未裁剪 MSE 曲线（用于发散诊断）。
+
+    输入格式:
+        mse_history: list[float] | np.ndarray
+        algo_name: str
+        save_path: str | Path
+        window: int
+
+    输出格式:
+        Path（绝对路径）
+    """
+    # 转换为 float64 原始 MSE 数组，shape=(T,)。
+    mse_arr = np.asarray(mse_history, dtype=np.float64)
+    # 计算滑动平均曲线，shape=(T,)。
+    smooth_arr = moving_average(mse_arr, window=window)
+
+    # 统一路径类型并创建父目录。
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # 创建画布并绘制 raw 曲线。
+    plt.figure(figsize=(10, 6))
+    plt.plot(mse_arr, label=f"{algo_name} Raw(MSE)", alpha=0.35)
+    # 绘制平滑曲线，便于观察趋势。
+    plt.plot(smooth_arr, label=f"{algo_name} MA(W={window})", linewidth=2.0)
+    # 设置横轴为 episode。
+    plt.xlabel("Episode")
+    # 设置纵轴为原始 MSE（不裁剪）。
+    plt.ylabel("Average Sum MSE (Raw)")
+    # 设置图标题为诊断用途。
+    plt.title(f"{algo_name} Raw MSE Diagnostic")
+    # 打开网格以便读数。
+    plt.grid(True, alpha=0.3)
+    # 显示图例。
+    plt.legend()
+    # 自适应边距，避免标签截断。
+    plt.tight_layout()
+
+    # 保存 PNG 文件。
+    plt.savefig(save_path, dpi=200)
+    # 关闭画布释放内存。
+    plt.close()
+    # 返回绝对路径。
+    return save_path.resolve()
+
+
+def plot_log_mse_curve(
+    mse_history: list[float] | np.ndarray,
+    algo_name: str,
+    save_path: str | Path,
+    window: int = 10,
+    eps: float = 1e-12,
+) -> Path:
+    """
+    作用:
+        绘制并保存 log(MSE) 曲线（用于稳定性判据）。
+
+    输入格式:
+        mse_history: list[float] | np.ndarray
+        algo_name: str
+        save_path: str | Path
+        window: int
+        eps: float
+
+    输出格式:
+        Path（绝对路径）
+    """
+    # 转换为 float64 MSE 数组，shape=(T,)。
+    mse_arr = np.asarray(mse_history, dtype=np.float64)
+    # 先对 MSE 做下界截断，再取自然对数，避免 log(0)。
+    log_arr = np.log(np.clip(mse_arr, eps, None))
+    # 对 log(MSE) 做滑动平均，shape=(T,)。
+    smooth_arr = moving_average(log_arr, window=window)
+
+    # 统一路径类型并创建父目录。
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # 创建画布并绘制 log(MSE) 原始曲线。
+    plt.figure(figsize=(10, 6))
+    plt.plot(log_arr, label=f"{algo_name} Raw log(MSE)", alpha=0.35)
+    # 绘制平滑曲线。
+    plt.plot(smooth_arr, label=f"{algo_name} MA(W={window})", linewidth=2.0)
+    # 设置横轴为 episode。
+    plt.xlabel("Episode")
+    # 设置纵轴为 log(MSE)。
+    plt.ylabel("log(Average Sum MSE)")
+    # 设置图标题为诊断用途。
+    plt.title(f"{algo_name} log(MSE) Diagnostic")
+    # 打开网格以便读数。
+    plt.grid(True, alpha=0.3)
+    # 显示图例。
+    plt.legend()
+    # 自适应边距，避免标签截断。
+    plt.tight_layout()
+
+    # 保存 PNG 文件。
+    plt.savefig(save_path, dpi=200)
+    # 关闭画布释放内存。
+    plt.close()
+    # 返回绝对路径。
     return save_path.resolve()
 
 
