@@ -1,0 +1,21 @@
+{
+  "algo": "DDPG",
+  "scenario": "base",
+  "n": 6,
+  "m": 3,
+  "seed": 3,
+  "episodes": 1,
+  "best_select_mode": "train",
+  "best_eval_every": 10,
+  "best_eval_episodes": 3,
+  "update_interval": 2,
+  "ddpg_warmup_steps": null,
+  "ddpg_actor_lr": null,
+  "ddpg_critic_lr": null,
+  "noise_std_decay": null,
+  "best_metric_source": "train",
+  "best_metric_value": 152.91963477054486,
+  "best_model_path": null,
+  "last_model_path": null,
+  "train_seconds": 0.15188600000692531
+}

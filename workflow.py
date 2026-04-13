@@ -38,7 +38,11 @@ from config import (
     SCENARIO_PRESETS,
 )
 from env import SemanticSchedulingEnv
-from utils import plot_compare_mse_curve, plot_compare_sum_aoi_curve
+from utils import (
+    compute_dynamic_ylim_from_two_tail_means,
+    plot_compare_mse_curve,
+    plot_compare_sum_aoi_curve,
+)
 
 
 def exp_decay_gamma(start_lr: float, end_lr: float, steps: int) -> float:
@@ -322,8 +326,25 @@ def save_history_and_compare(
     cmp_mse_path = Path("results") / f"compare_DQN_DDPG_{scenario}_seed{seed}_ep{episodes}_mse.png"
     # 生成 SumAoI 对比图路径。
     cmp_aoi_path = Path("results") / f"compare_DQN_DDPG_{scenario}_seed{seed}_ep{episodes}_sumaoi.png"
+    # 对比图动态纵轴：基准取 DQN/DDPG 最后 10% 均值中的较大值，目标比例固定 35%。
+    cmp_mse_ylim = compute_dynamic_ylim_from_two_tail_means(dqn_mse, ddpg_mse, target_ratio=0.35)
+    cmp_aoi_ylim = compute_dynamic_ylim_from_two_tail_means(dqn_aoi, ddpg_aoi, target_ratio=0.35)
     # 保存 MSE 对比图。
-    saved_cmp_mse = plot_compare_mse_curve(dqn_mse, ddpg_mse, cmp_mse_path, window=10)
+    saved_cmp_mse = plot_compare_mse_curve(
+        dqn_mse,
+        ddpg_mse,
+        cmp_mse_path,
+        window=10,
+        ylim=cmp_mse_ylim,
+        hard_clip=True,
+    )
     # 保存 SumAoI 对比图。
-    saved_cmp_aoi = plot_compare_sum_aoi_curve(dqn_aoi, ddpg_aoi, cmp_aoi_path, window=10)
+    saved_cmp_aoi = plot_compare_sum_aoi_curve(
+        dqn_aoi,
+        ddpg_aoi,
+        cmp_aoi_path,
+        window=10,
+        ylim=cmp_aoi_ylim,
+        hard_clip=True,
+    )
     print(f"Compare curves saved to: {saved_cmp_mse} and {saved_cmp_aoi}")

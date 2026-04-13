@@ -17,6 +17,7 @@ from pathlib import Path
 from config import DEFAULT_SEED, EPISODE_LENGTH, NUM_EPISODES, SCENARIO_PRESETS
 from train import load_checkpoint, run_evaluation, run_training
 from utils import (
+    compute_dynamic_ylim_from_tail_mean,
     plot_learning_curve,
     plot_learning_curve_raw,
     plot_log_mse_curve,
@@ -217,10 +218,20 @@ def _plot_train_outputs(args: argparse.Namespace, train_result: dict) -> None:
     # 展示图路径（裁剪版曲线）。
     mse_path = Path("results") / f"result_{args.algo}_{args.scenario}_seed{args.seed}.png"
     aoi_path = Path("results") / f"result_{args.algo}_{args.scenario}_seed{args.seed}_sumaoi.png"
+    # 动态纵轴：按最后 10% 收敛段均值构建，目标比例固定 35%。
+    mse_ylim = compute_dynamic_ylim_from_tail_mean(mse_history, target_ratio=0.35)
+    aoi_ylim = compute_dynamic_ylim_from_tail_mean(sum_aoi_history, target_ratio=0.35)
     # 保存 MSE 展示图。
-    saved_mse_path = plot_learning_curve(mse_history, args.algo, mse_path, window=10)
+    saved_mse_path = plot_learning_curve(mse_history, args.algo, mse_path, window=10, ylim=mse_ylim, hard_clip=True)
     # 保存 AoI 展示图。
-    saved_aoi_path = plot_sum_aoi_curve(sum_aoi_history, args.algo, aoi_path, window=10)
+    saved_aoi_path = plot_sum_aoi_curve(
+        sum_aoi_history,
+        args.algo,
+        aoi_path,
+        window=10,
+        ylim=aoi_ylim,
+        hard_clip=True,
+    )
     print(f"Training finished. MSE display curve saved to: {saved_mse_path}")
     print(f"Training finished. SumAoI display curve saved to: {saved_aoi_path}")
 

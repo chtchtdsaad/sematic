@@ -51,7 +51,7 @@ RAYLEIGH_SCALE_MAX = 2.0
 
 # A 矩阵谱半径限制
 MIN_SPECTRAL_RADIUS = 1.0
-MAX_SPECTRAL_RADIUS = 1.4
+MAX_SPECTRAL_RADIUS = 1.3
 
 # -----------------------------
 # 可复现性

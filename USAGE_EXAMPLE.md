@@ -132,11 +132,13 @@ python main.py --algo DDPG --scenario s20x10 --mode eval --seed 42 --device cpu 
 
 - `results/result_{algo}_{scenario}_seed{seed}.png`
 - `results/result_{algo}_{scenario}_seed{seed}_sumaoi.png`
+- 训练展示图采用动态纵轴：按最后 10% episode 的均值构造范围，目标比例固定 35%，并对超出上界的点做硬裁剪。
 
 ### 5.2 诊断曲线（`--save-diagnostic-plots 1`）
 
 - `results/result_{algo}_{scenario}_seed{seed}_raw_mse.png`
 - `results/result_{algo}_{scenario}_seed{seed}_log_mse.png`
+- 诊断图不使用动态纵轴（保持原始诊断行为）。
 
 ### 5.3 训练报告（每次 train 都会生成）
 
@@ -152,6 +154,7 @@ python main.py --algo DDPG --scenario s20x10 --mode eval --seed 42 --device cpu 
 - 若 DQN 和 DDPG 同配置 history 同时存在，且 `--save-plots 1`，会输出：
   - `results/compare_DQN_DDPG_{scenario}_seed{seed}_ep{episodes}_mse.png`
   - `results/compare_DQN_DDPG_{scenario}_seed{seed}_ep{episodes}_sumaoi.png`
+- 对比图采用动态纵轴：基准取 DQN/DDPG 最后 10% 均值中的较大值，目标比例固定 35%，并进行硬裁剪。
 
 ## 6. 防混用提示（务必看）
 

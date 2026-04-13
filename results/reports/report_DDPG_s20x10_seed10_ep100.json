@@ -1,8 +1,8 @@
 {
   "algo": "DDPG",
-  "scenario": "s10x5",
-  "n": 10,
-  "m": 5,
+  "scenario": "s20x10",
+  "n": 20,
+  "m": 10,
   "seed": 10,
   "episodes": 100,
   "best_select_mode": "eval",
@@ -14,8 +14,8 @@
   "ddpg_critic_lr": null,
   "noise_std_decay": null,
   "best_metric_source": "eval",
-  "best_metric_value": 95.98774648806248,
+  "best_metric_value": 196.5351689008975,
   "best_model_path": null,
   "last_model_path": null,
-  "train_seconds": 563.9217260000296
+  "train_seconds": 605.0024644000223
 }

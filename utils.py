@@ -17,9 +17,14 @@ import numpy as np
 # 映射缓存: key=id(action_space), value={action_tuple: action_id}
 _ACTION_MAP_CACHE: dict[int, dict[tuple[int, ...], int]] = {}
 
-# 可视化数值显示范围
+# 静态可视化数值显示范围（用于评估图/默认回退）
 MSE_MIN, MSE_MAX = 50.0, 200.0
-AOI_MIN, AOI_MAX = 5.0, 25.0
+AOI_MIN, AOI_MAX = 10.0, 30.0
+
+# 动态纵轴规则（训练图/对比图使用）
+DYNAMIC_TAIL_RATIO = 0.10
+DYNAMIC_MIN_TAIL_POINTS = 5
+DYNAMIC_TARGET_RATIO = 0.35
 
 
 def map_continuous_to_discrete(virtual_action: np.ndarray, action_space: list[tuple[int, ...]]) -> int:
@@ -155,11 +160,109 @@ def moving_average(values: list[float] | np.ndarray, window: int = 10) -> np.nda
     return np.concatenate([prefix, valid])
 
 
+def _compute_tail_count(total_len: int, tail_ratio: float, min_tail_points: int) -> int:
+    """
+    作用:
+        根据总长度计算“最后 tail 段”的点数。
+    """
+    if total_len <= 0:
+        return 0
+    tail_n = int(np.ceil(float(total_len) * float(tail_ratio)))
+    tail_n = max(int(min_tail_points), tail_n)
+    return min(total_len, tail_n)
+
+
+def compute_tail_mean(
+    values: list[float] | np.ndarray,
+    tail_ratio: float = DYNAMIC_TAIL_RATIO,
+    min_tail_points: int = DYNAMIC_MIN_TAIL_POINTS,
+) -> float:
+    """
+    作用:
+        计算序列最后 tail 区间的均值（用于收敛段基准）。
+    """
+    arr = np.asarray(values, dtype=np.float64).reshape(-1)
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        return float("nan")
+    tail_n = _compute_tail_count(arr.size, tail_ratio=tail_ratio, min_tail_points=min_tail_points)
+    return float(np.mean(arr[-tail_n:]))
+
+
+def compute_dynamic_ylim_from_tail_mean(
+    values: list[float] | np.ndarray,
+    target_ratio: float = DYNAMIC_TARGET_RATIO,
+    tail_ratio: float = DYNAMIC_TAIL_RATIO,
+    min_tail_points: int = DYNAMIC_MIN_TAIL_POINTS,
+    y_min: float = 0.0,
+) -> tuple[float, float]:
+    """
+    作用:
+        根据“最后 tail 段均值”计算动态纵轴范围。
+
+    规则:
+        y_max = tail_mean / target_ratio
+    """
+    arr = np.asarray(values, dtype=np.float64).reshape(-1)
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        return float(y_min), float(y_min + 1.0)
+
+    # 目标比例数值安全：限制在 (0,1)。
+    ratio = float(np.clip(target_ratio, 1e-3, 0.99))
+
+    # 优先使用 tail 均值；异常时回退到全局最大值。
+    tail_mean = compute_tail_mean(arr, tail_ratio=tail_ratio, min_tail_points=min_tail_points)
+    if not np.isfinite(tail_mean) or tail_mean <= 0.0:
+        tail_mean = float(np.max(arr))
+    if tail_mean <= 0.0:
+        tail_mean = 1.0
+
+    y_max = float(tail_mean / ratio)
+    if y_max <= y_min:
+        y_max = float(y_min + 1.0)
+    return float(y_min), float(y_max)
+
+
+def compute_dynamic_ylim_from_two_tail_means(
+    values_a: list[float] | np.ndarray,
+    values_b: list[float] | np.ndarray,
+    target_ratio: float = DYNAMIC_TARGET_RATIO,
+    tail_ratio: float = DYNAMIC_TAIL_RATIO,
+    min_tail_points: int = DYNAMIC_MIN_TAIL_POINTS,
+    y_min: float = 0.0,
+) -> tuple[float, float]:
+    """
+    作用:
+        对比图动态纵轴：基准取两条曲线 tail 均值中的较大值。
+    """
+    mean_a = compute_tail_mean(values_a, tail_ratio=tail_ratio, min_tail_points=min_tail_points)
+    mean_b = compute_tail_mean(values_b, tail_ratio=tail_ratio, min_tail_points=min_tail_points)
+    ref = float(np.nanmax(np.asarray([mean_a, mean_b], dtype=np.float64)))
+    if not np.isfinite(ref) or ref <= 0.0:
+        # 回退：用两条序列的整体最大值。
+        a_arr = np.asarray(values_a, dtype=np.float64).reshape(-1)
+        b_arr = np.asarray(values_b, dtype=np.float64).reshape(-1)
+        merged = np.concatenate([a_arr, b_arr]) if a_arr.size + b_arr.size > 0 else np.asarray([1.0])
+        merged = merged[np.isfinite(merged)]
+        ref = float(np.max(merged)) if merged.size > 0 else 1.0
+        if ref <= 0.0:
+            ref = 1.0
+
+    ratio = float(np.clip(target_ratio, 1e-3, 0.99))
+    y_max = float(ref / ratio)
+    if y_max <= y_min:
+        y_max = float(y_min + 1.0)
+    return float(y_min), float(y_max)
+
+
 def plot_learning_curve(
     mse_history: list[float] | np.ndarray,
     algo_name: str,
     save_path: str | Path,
     window: int = 10,
+    ylim: tuple[float, float] | None = None,
+    hard_clip: bool = True,
 ) -> Path:
     """
     作用:
@@ -179,9 +282,19 @@ def plot_learning_curve(
         2. 使用 matplotlib 绘制 raw + smooth 曲线。
         3. 保存 PNG 并返回绝对路径。
     """
-    # 数据转换并限制到指定范围 [50, 150]
-    mse_arr = np.asarray(mse_history, dtype=np.float64)
-    mse_arr = np.clip(mse_arr, MSE_MIN, MSE_MAX)
+    # 原始数据转换。
+    mse_raw = np.asarray(mse_history, dtype=np.float64)
+
+    # 纵轴范围：未传入时回退静态默认。
+    if ylim is None:
+        y_min, y_max = float(MSE_MIN), float(MSE_MAX)
+    else:
+        y_min, y_max = float(ylim[0]), float(ylim[1])
+        if y_max <= y_min:
+            y_max = y_min + 1.0
+
+    # 展示序列：hard_clip=True 时进行硬裁剪。
+    mse_arr = np.clip(mse_raw, y_min, y_max) if hard_clip else mse_raw
     smooth_arr = moving_average(mse_arr, window=window)
 
     # 路径处理
@@ -195,7 +308,7 @@ def plot_learning_curve(
     plt.xlabel("Episode")
     plt.ylabel("Average Sum MSE")
     plt.title(f"{algo_name} Learning Curve")
-    plt.ylim(MSE_MIN, MSE_MAX)
+    plt.ylim(y_min, y_max)
     plt.grid(True, alpha=0.3)
     plt.legend()
     plt.tight_layout()
@@ -324,6 +437,8 @@ def plot_sum_aoi_curve(
     algo_name: str,
     save_path: str | Path,
     window: int = 10,
+    ylim: tuple[float, float] | None = None,
+    hard_clip: bool = True,
 ) -> Path:
     """
     作用:
@@ -343,9 +458,19 @@ def plot_sum_aoi_curve(
         2. 使用 matplotlib 绘制 raw + smooth 曲线。
         3. 保存 PNG 并返回绝对路径。
     """
-    # 数据转换并限制到指定范围 [5, 20]
-    aoi_arr = np.asarray(sum_aoi_history, dtype=np.float64)
-    aoi_arr = np.clip(aoi_arr, AOI_MIN, AOI_MAX)
+    # 原始数据转换。
+    aoi_raw = np.asarray(sum_aoi_history, dtype=np.float64)
+
+    # 纵轴范围：未传入时回退静态默认。
+    if ylim is None:
+        y_min, y_max = float(AOI_MIN), float(AOI_MAX)
+    else:
+        y_min, y_max = float(ylim[0]), float(ylim[1])
+        if y_max <= y_min:
+            y_max = y_min + 1.0
+
+    # 展示序列：hard_clip=True 时进行硬裁剪。
+    aoi_arr = np.clip(aoi_raw, y_min, y_max) if hard_clip else aoi_raw
     smooth_arr = moving_average(aoi_arr, window=window)
 
     # 路径处理
@@ -359,7 +484,7 @@ def plot_sum_aoi_curve(
     plt.xlabel("Episode")
     plt.ylabel("Average SumAoI")
     plt.title(f"{algo_name} SumAoI Curve")
-    plt.ylim(AOI_MIN, AOI_MAX)
+    plt.ylim(y_min, y_max)
     plt.grid(True, alpha=0.3)
     plt.legend()
     plt.tight_layout()
@@ -376,6 +501,8 @@ def plot_compare_mse_curve(
     ddpg_mse_history: list[float] | np.ndarray,
     save_path: str | Path,
     window: int = 10,
+    ylim: tuple[float, float] | None = None,
+    hard_clip: bool = True,
 ) -> Path:
     """
     作用:
@@ -390,9 +517,21 @@ def plot_compare_mse_curve(
     输出格式:
         Path（绝对路径）
     """
-    # 转换并按统一范围裁剪
-    dqn_arr = np.clip(np.asarray(dqn_mse_history, dtype=np.float64), MSE_MIN, MSE_MAX)
-    ddpg_arr = np.clip(np.asarray(ddpg_mse_history, dtype=np.float64), MSE_MIN, MSE_MAX)
+    # 原始数据转换。
+    dqn_raw = np.asarray(dqn_mse_history, dtype=np.float64)
+    ddpg_raw = np.asarray(ddpg_mse_history, dtype=np.float64)
+
+    # 纵轴范围：未传入时回退静态默认。
+    if ylim is None:
+        y_min, y_max = float(MSE_MIN), float(MSE_MAX)
+    else:
+        y_min, y_max = float(ylim[0]), float(ylim[1])
+        if y_max <= y_min:
+            y_max = y_min + 1.0
+
+    # 展示序列：hard_clip=True 时进行硬裁剪。
+    dqn_arr = np.clip(dqn_raw, y_min, y_max) if hard_clip else dqn_raw
+    ddpg_arr = np.clip(ddpg_raw, y_min, y_max) if hard_clip else ddpg_raw
 
     # 平滑曲线
     dqn_smooth = moving_average(dqn_arr, window=window)
@@ -411,7 +550,7 @@ def plot_compare_mse_curve(
     plt.xlabel("Episode")
     plt.ylabel("Average Sum MSE")
     plt.title("DQN vs DDPG - Average Sum MSE")
-    plt.ylim(MSE_MIN, MSE_MAX)
+    plt.ylim(y_min, y_max)
     plt.grid(True, alpha=0.3)
     plt.legend()
     plt.tight_layout()
@@ -427,6 +566,8 @@ def plot_compare_sum_aoi_curve(
     ddpg_sum_aoi_history: list[float] | np.ndarray,
     save_path: str | Path,
     window: int = 10,
+    ylim: tuple[float, float] | None = None,
+    hard_clip: bool = True,
 ) -> Path:
     """
     作用:
@@ -441,9 +582,21 @@ def plot_compare_sum_aoi_curve(
     输出格式:
         Path（绝对路径）
     """
-    # 转换并按统一范围裁剪
-    dqn_arr = np.clip(np.asarray(dqn_sum_aoi_history, dtype=np.float64), AOI_MIN, AOI_MAX)
-    ddpg_arr = np.clip(np.asarray(ddpg_sum_aoi_history, dtype=np.float64), AOI_MIN, AOI_MAX)
+    # 原始数据转换。
+    dqn_raw = np.asarray(dqn_sum_aoi_history, dtype=np.float64)
+    ddpg_raw = np.asarray(ddpg_sum_aoi_history, dtype=np.float64)
+
+    # 纵轴范围：未传入时回退静态默认。
+    if ylim is None:
+        y_min, y_max = float(AOI_MIN), float(AOI_MAX)
+    else:
+        y_min, y_max = float(ylim[0]), float(ylim[1])
+        if y_max <= y_min:
+            y_max = y_min + 1.0
+
+    # 展示序列：hard_clip=True 时进行硬裁剪。
+    dqn_arr = np.clip(dqn_raw, y_min, y_max) if hard_clip else dqn_raw
+    ddpg_arr = np.clip(ddpg_raw, y_min, y_max) if hard_clip else ddpg_raw
 
     # 平滑曲线
     dqn_smooth = moving_average(dqn_arr, window=window)
@@ -462,7 +615,7 @@ def plot_compare_sum_aoi_curve(
     plt.xlabel("Episode")
     plt.ylabel("Average SumAoI")
     plt.title("DQN vs DDPG - Average SumAoI")
-    plt.ylim(AOI_MIN, AOI_MAX)
+    plt.ylim(y_min, y_max)
     plt.grid(True, alpha=0.3)
     plt.legend()
     plt.tight_layout()
