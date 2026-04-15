@@ -4,7 +4,7 @@
 将核心数学函数封装为标准 MDP：
 - 状态 s_t = [AoI 向量, H_t 离散信道状态索引展平]
 - 动作 a_t = 离散 action_id
-- 奖励 r_t = -sum_n Tr(P_n,t)
+- 奖励 r_t = -clip(sum_n Tr(P_n,t), 0, n*200)
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from config import (
     PACKET_LOSS_LEVELS,
     RAYLEIGH_SCALE_MAX,
     RAYLEIGH_SCALE_MIN,
+    TRACE_P_CAP_PER_SENSOR,
     en,
     ln,
     M,
@@ -92,6 +93,8 @@ class SemanticSchedulingEnv:
         # 环境运行参数
         self.max_aoi = int(MAX_AOI)
         self.episode_length = int(episode_length)
+        # 总 Tr(P) 截断上限: n * 每传感器上限（用于抑制训练中指数爆炸）。
+        self.total_mse_cap = float(self.n) * float(TRACE_P_CAP_PER_SENSOR)
 
         # 随机数生成器（统一来源，便于复现）
         self.rng = np.random.default_rng(seed)
@@ -452,6 +455,9 @@ class SemanticSchedulingEnv:
                 noise_cov_sums=self.noise_cov_sums_cache[i],
             )
 
+        # 对总 MSE 做硬截断，控制 Tr(P) 指数爆炸对训练稳定性的冲击。
+        total_mse = min(total_mse, self.total_mse_cap)
+
         # 奖励定义为负总 MSE。
         reward = -float(total_mse)
 
@@ -505,8 +511,8 @@ class SemanticSchedulingEnv:
         核心步骤:
             1. 将 action_id 解码为传感器-信道分配方案。
             2. 根据调度与丢包结果更新 AoI（并截断到 max_aoi）。
-            3. 根据更新后的 AoI 计算 total_mse。
-            4. reward = -total_mse。
+            3. 根据更新后的 AoI 计算 total_mse 并做上限截断。
+            4. reward = -total_mse（截断后）。
             5. 采样下一个时刻信道状态，推进时间并返回。
         """
         # action_space 未构建时，禁止 action_id 接口（DDPG 大场景走 step_assignment）。

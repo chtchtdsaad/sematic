@@ -44,6 +44,9 @@ NUM_CHANNEL_STATES = int(PACKET_LOSS_LEVELS.size)
 # -----------------------------
 EPISODE_LENGTH = 500   # 每个 episode 的时长 T
 MAX_AOI = 30           # AoI 上限（用于控制状态爆炸）
+# 总 Tr(P) 截断系数（按传感器数量线性放大）
+# 规则: total_mse_cap = N * TRACE_P_CAP_PER_SENSOR
+TRACE_P_CAP_PER_SENSOR = 200.0
 
 # Rayleigh 衰落尺度参数范围（每个 sensor-channel 对独立采样一个固定 scale）
 RAYLEIGH_SCALE_MIN = 0.5
@@ -86,13 +89,13 @@ DDPG_CRITIC_LR = 1e-3
 DDPG_TAU = 0.005  # 目标网络软更新系数
 
 # 300 episode 的学习率衰减目标（指数衰减终点）
-DDPG_ACTOR_LR_END = 2e-5
-DDPG_CRITIC_LR_END = 1e-4
+DDPG_ACTOR_LR_END = 1e-4
+DDPG_CRITIC_LR_END = 1e-3
 
 # 噪声调度（约 300 episode 从 0.25 衰减到 0.03）
-NOISE_STD_START = 0.25
-NOISE_STD_DECAY = 0.99296
-NOISE_STD_MIN = 0.03
+NOISE_STD_START = 0.10
+NOISE_STD_DECAY = 0.98
+NOISE_STD_MIN = 0.005
 
 # DDPG 稳定化
 DDPG_WARMUP_STEPS = 2000

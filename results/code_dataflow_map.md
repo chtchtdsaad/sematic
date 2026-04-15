@@ -1,223 +1,192 @@
-﻿# Remote_Estimation_RL 代码关系图（文件 + 函数 + 数据流）
+# sematic 项目代码工作流（Dataflow）
 
-> 说明
-- 本文件基于当前代码自动梳理。
-- 采用 Mermaid，可在支持 Mermaid 的编辑器/平台中直接渲染为思维导图/流程图。
+> 更新时间：基于当前代码版本（含 `scenario`、DDPG assignment 路径、动态纵轴 35%）。
+> 目标：帮助你快速理解“从 CLI 到训练/评估/出图”的完整数据流。
 
-## 1) 文件级依赖关系图
+## 1. 文件级工作流总览
 
 ```mermaid
 flowchart LR
-    CFG["config.py\n(全局常量)"]
-    CORE["core.py\n(数学引擎/动作空间)"]
-    ENV["env.py\n(SemanticSchedulingEnv)"]
-    AGENT["agent.py\n(ReplayBuffer/DQN/DDPG)"]
-    TRAIN["train.py\n(训练/评估/模型保存)"]
-    UTILS["utils.py\n(动作映射/绘图)"]
-    MAIN["main.py\n(CLI 程序入口)"]
+    CFG["config.py\n全局常量 + 场景预设"]
+    CORE["core.py\n数学核心\n(矩阵/ARE/动作空间)"]
+    ENV["env.py\nSemanticSchedulingEnv"]
+    AGT["agent.py\nReplayBuffer + DQN/DDPG"]
+    TRN["train.py\n训练与评估循环"]
+    UTL["utils.py\n动作映射 + 绘图 + 动态轴"]
+    WFL["workflow.py\n编排层\n(构建 env/agent/config, 对比图)"]
+    MAIN["main.py\nCLI 入口"]
 
     CFG --> CORE
     CFG --> ENV
-    CFG --> AGENT
-    CFG --> TRAIN
+    CFG --> AGT
+    CFG --> TRN
+    CFG --> WFL
     CFG --> MAIN
 
     CORE --> ENV
-    AGENT --> TRAIN
-    UTILS --> TRAIN
+    AGT --> TRN
+    UTL --> TRN
+    UTL --> WFL
+    ENV --> WFL
+    AGT --> WFL
 
-    ENV --> MAIN
-    AGENT --> MAIN
-    TRAIN --> MAIN
-    UTILS --> MAIN
+    WFL --> MAIN
+    TRN --> MAIN
+    UTL --> MAIN
 ```
 
-## 2) 函数/类关系图（跨文件调用）
+## 2. 入口与编排（main + workflow）
+
+### 2.1 CLI 入口主链
 
 ```mermaid
-flowchart TB
-    subgraph MAIN_FILE["main.py"]
-        M1["parse_args"]
-        M2["set_global_seed"]
-        M3["resolve_device"]
-        M4["build_train_config"]
-        M5["_exp_decay_gamma"]
-        M6["main"]
-    end
-
-    subgraph ENV_FILE["env.py"]
-        E0["SemanticSchedulingEnv.__init__"]
-        E1["_build_mse_cache"]
-        E2["_build_global_channel_bins"]
-        E3["_build_stationary_channel_state_probs"]
-        E4["_refresh_channel_states"]
-        E5["_build_state"]
-        E6["reset"]
-        E7["step"]
-    end
-
-    subgraph CORE_FILE["core.py"]
-        C1["generate_unstable_matrix"]
-        C2["solve_steady_state_covariance"]
-        C3["compute_mse_from_aoi"]
-        C4["generate_action_space"]
-        C5["decode_action"]
-    end
-
-    subgraph AGENT_FILE["agent.py"]
-        A0["ReplayBuffer\n(push/sample/__len__)" ]
-        A1["QNetwork"]
-        A2["DQNAgent\n(select_action/train_step)"]
-        A3["ActorNet"]
-        A4["CriticNet"]
-        A5["DDPGAgent\n(select_action/train_step/_soft_update\nstep_lr_decay/get_current_lrs)"]
-    end
-
-    subgraph TRAIN_FILE["train.py"]
-        T1["_normalize_state_for_ddpg"]
-        T2["_build_checkpoint"]
-        T3["save_checkpoint"]
-        T4["load_checkpoint"]
-        T5["run_training"]
-        T6["run_evaluation"]
-    end
-
-    subgraph UTILS_FILE["utils.py"]
-        U1["map_continuous_to_discrete"]
-        U2["moving_average"]
-        U3["plot_learning_curve"]
-        U4["plot_sum_aoi_curve"]
-    end
-
-    %% main -> 其他模块
-    M6 --> M1
-    M6 --> M2
-    M6 --> M3
-    M6 --> M4
-    M6 --> M5
-
-    M6 --> E0
-    M6 --> A2
-    M6 --> A5
-    M6 --> T5
-    M6 --> T6
-    M6 --> T4
-    M6 --> U3
-    M6 --> U4
-
-    %% env 初始化调用 core
-    E0 --> C4
-    E0 --> C1
-    E0 --> C2
-    E0 --> E1
-    E0 --> E2
-    E0 --> E3
-    E0 --> E4
-
-    %% env.step 调用 core
-    E7 --> C5
-    E7 --> C3
-    E7 --> E4
-    E6 --> E4
-    E6 --> E5
-    E7 --> E5
-
-    %% train 调用关系
-    T5 --> A0
-    T5 --> T1
-    T5 --> U1
-    T5 --> T3
-    T5 --> A2
-    T5 --> A5
-
-    T6 --> T1
-    T6 --> U1
-    T6 --> A2
-    T6 --> A5
-
-    T3 --> T2
-
-    %% utils 内部
-    U3 --> U2
-    U4 --> U2
+flowchart TD
+    A["main.py::parse_args"] --> B["set_global_seed(seed)"]
+    B --> C["resolve_device(cpu/cuda)"]
+    C --> D{"algo/scenario 合法?"}
+    D -->|No| E["抛错退出"]
+    D -->|Yes| F["workflow.build_env(seed, scenario, algo)"]
+    F --> G["workflow.build_agent(args, env, device)"]
+    G --> H{"mode"}
+    H -->|eval| I["main._run_eval_mode"]
+    H -->|train| J["workflow.build_train_config(args)"]
+    J --> K["train.run_training(algo, env, agent, cfg)"]
+    K --> L["main._plot_train_outputs"]
+    L --> M["main._save_run_report"]
+    M --> N{"save_history?"}
+    N -->|Yes| O["workflow.save_history_and_compare"]
+    N -->|No| P["结束"]
 ```
 
-## 3) 训练数据流（run_training 主路径）
+### 2.2 场景选择与限制
+
+- `--scenario` 支持：`base`、`s10x5`、`s20x10`。
+- `workflow.build_env(...)` 通过 `SCENARIO_PRESETS` 解析 `n,m`。
+- `DQN` 仅允许 `base`，非 `base` 会在 `main.py` 直接拒绝。
+- 环境动作空间构建策略：
+  - DQN：构建离散 `action_space`。
+  - DDPG：可不构建离散动作全集，走 `assignment` 接口避免组合爆炸。
+
+## 3. 训练数据流（train.run_training）
 
 ```mermaid
 sequenceDiagram
-    participant Main as main.py::main
-    participant Env as env.SemanticSchedulingEnv
-    participant Train as train.run_training
-    participant Agent as DQNAgent / DDPGAgent
-    participant Buffer as ReplayBuffer
-    participant Core as core.py
+    participant Main as main.py
+    participant WF as workflow.py
+    participant Env as env.py
+    participant Train as train.py
+    participant Agent as agent.py
     participant Utils as utils.py
+    participant Core as core.py
 
-    Main->>Env: 初始化环境（构建系统矩阵/信道分布/缓存）
-    Main->>Agent: 初始化智能体（device + 网络）
+    Main->>WF: build_env/build_agent/build_train_config
     Main->>Train: run_training(algo, env, agent, cfg)
 
-    loop 每个 Episode
-        Train->>Env: state = reset()
-
-        loop 每个 Step
-            alt algo == DQN
-                Train->>Agent: action_id = select_action(state, epsilon)
+    loop each episode
+        Train->>Env: reset() -> state
+        loop each step
+            alt DQN
+                Train->>Agent: select_action(state, epsilon)
                 Train->>Env: step(action_id)
                 Env->>Core: decode_action + compute_mse_from_aoi
-                Train->>Buffer: push(state, action_id, reward, next_state, done)
-            else algo == DDPG
-                Train->>Train: state_norm = _normalize_state_for_ddpg(state)
-                Train->>Agent: virtual_action = select_action(state_norm, noise_std)
-                Train->>Utils: action_id = map_continuous_to_discrete(virtual_action, action_space)
-                Train->>Env: step(action_id)
-                Env->>Core: decode_action + compute_mse_from_aoi
+                Train->>Agent: buffer.push(state, action_id, reward, next_state, done)
+            else DDPG
+                Train->>Train: _normalize_state_for_ddpg(state)
+                Train->>Agent: select_action(state_norm, noise_std) -> virtual_action
+                Train->>Utils: map_continuous_to_assignment(virtual_action, n, m)
+                Train->>Env: step_assignment(assignment)
+                Env->>Core: compute_mse_from_aoi
                 Train->>Train: reward_train = clip(reward)/scale
-                Train->>Buffer: push(state_norm, virtual_action, reward_train, next_state_norm, done)
+                Train->>Agent: buffer.push(state_norm, virtual_action, reward_train, next_state_norm, done)
             end
 
-            alt 训练条件满足
+            alt ready_for_train && global_step % update_interval == 0
                 Train->>Agent: train_step(buffer, batch_size)
             end
         end
 
-        Train->>Train: 计算 avg_mse 与 avg_sum_aoi
-        Train->>Train: 更新 epsilon/noise_std（及 DDPG LR decay）
+        Train->>Train: 统计 avg_mse / avg_sum_aoi
+        Train->>Train: 更新 epsilon 或 noise_std
+        Train->>Train: (可选) best-select-mode=eval 时做 clean-eval
         Train->>Train: 保存 best/last checkpoint
     end
 
-    Train-->>Main: 返回 mse_history / sum_aoi_history / checkpoint路径
-    Main->>Utils: plot_learning_curve(mse_history)
-    Main->>Utils: plot_sum_aoi_curve(sum_aoi_history)
+    Train-->>Main: mse_history, sum_aoi_history, best/last path, train_seconds
 ```
 
-## 4) 评估数据流（run_evaluation）
+## 4. 评估数据流（run_evaluation）
 
 ```mermaid
-flowchart LR
-    A["load_checkpoint"] --> B["run_evaluation"]
-    B --> C{"algo?"}
-    C -->|DQN| D["select_action(state, epsilon=0)"]
-    C -->|DDPG| E["select_action(state_norm, noise_std=0)"]
-    E --> F["map_continuous_to_discrete"]
-    D --> G["env.step(action_id)"]
-    F --> G
-    G --> H["统计 avg_mse / avg_sum_aoi"]
-    H --> I["plot_learning_curve"]
-    H --> J["plot_sum_aoi_curve"]
+flowchart TD
+    A["main._run_eval_mode"] --> B["load_checkpoint"]
+    B --> C["train.run_evaluation"]
+    C --> D{"algo?"}
+    D -->|DQN| E["agent.select_action(epsilon=0)"]
+    D -->|DDPG| F["state normalize + select_action(noise=0)"]
+    F --> G["map_continuous_to_assignment"]
+    E --> H["env.step(action_id)"]
+    G --> I["env.step_assignment(assignment)"]
+    H --> J["累计 mean_mse / mean_sum_aoi"]
+    I --> J
+    J --> K["(可选) 保存评估曲线"]
 ```
 
-## 5) 状态与动作数据格式总览
+## 5. 绘图与输出工作流
 
-- State: `np.ndarray[float32]`, shape=`(N + N*M,)`，当前为 `(24,)`。
-- AoI: `np.ndarray[int64]`, shape=`(N,)`。
-- H_t（离散信道索引）: `np.ndarray[int64]`, shape=`(N,M)`，元素取值 `0..4`。
-- DQN action: `int`（`action_id`）。
-- DDPG virtual action: `np.ndarray[float32]`, shape=`(N,)`，范围 `[-1,1]`。
-- Env reward: `float = -sum_n Tr(P_n,t)`。
-- 训练输出:
+### 5.1 训练展示图（动态纵轴）
+
+- 生效范围：训练阶段 MSE 图 + SumAoI 图。
+- 动态规则：
+  - 基准取最后 `10%` episode 的均值（tail mean）。
+  - 目标比例固定 `35%`，即 `y_max = tail_mean / 0.35`。
+  - 超过上界的点做硬裁剪（hard clip）。
+- 入口：`main._plot_train_outputs(...)` 调用 `utils.compute_dynamic_ylim_from_tail_mean(...)`。
+
+### 5.2 对比图（动态纵轴）
+
+- 生效范围：`compare_DQN_DDPG_*_mse.png` 与 `*_sumaoi.png`。
+- 动态规则：
+  - 先算 DQN 和 DDPG 各自最后 `10%` 的均值。
+  - 取两者较大值作为对比图基准。
+  - 用同一 `35%` 规则计算单一纵轴并硬裁剪。
+- 入口：`workflow.save_history_and_compare(...)`。
+
+### 5.3 不使用动态纵轴的图
+
+- 诊断图：`raw_mse`、`log_mse`（保持原始诊断行为）。
+- 评估图：保持静态/默认行为。
+
+## 6. 关键数据格式与接口
+
+- 环境状态：
+  - `state: np.ndarray[float32], shape=(n + n*m,)`
+  - 前 `n` 维是 AoI，后 `n*m` 维是离散信道索引。
+- DQN 动作：
+  - `action_id: int`
+  - 使用 `env.step(action_id)`。
+- DDPG 动作：
+  - `virtual_action: np.ndarray[float32], shape=(n,)`
+  - 经 `map_continuous_to_assignment` 变为 `assignment: tuple[int,...]`。
+  - 使用 `env.step_assignment(assignment)`。
+- 训练核心输出：
   - `mse_history: list[float]`
   - `sum_aoi_history: list[float]`
-  - `best_model_path / last_model_path`
-  - 
+  - `best_model_path`, `last_model_path`
+  - `best_metric_source`, `best_metric_value`
+  - `train_seconds`
+
+## 7. 结果文件落盘路径
+
+- Checkpoint：
+  - `results/checkpoints/{algo}_{scenario}_seed{seed}_best.pt`
+  - `results/checkpoints/{algo}_{scenario}_seed{seed}_last.pt`
+- 历史：
+  - `results/histories/{algo}_{scenario}_seed{seed}_ep{episodes}.npz`
+- 报告：
+  - `results/reports/report_{algo}_{scenario}_seed{seed}_ep{episodes}.json`
+- 图像：
+  - 训练图：`results/result_{algo}_{scenario}_seed{seed}.png`
+  - 训练 SumAoI：`results/result_{algo}_{scenario}_seed{seed}_sumaoi.png`
+  - 诊断图：`results/result_{algo}_{scenario}_seed{seed}_raw_mse.png`, `..._log_mse.png`
+  - 对比图：`results/compare_DQN_DDPG_{scenario}_seed{seed}_ep{episodes}_mse.png`, `..._sumaoi.png`
+
