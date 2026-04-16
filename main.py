@@ -95,7 +95,9 @@ def parse_args() -> argparse.Namespace:
         help="Save raw/log-MSE diagnostic plots.",
     )
 
-    # ---------- DDPG 可调参数（稳定性/时长实验） ----------
+    # ---------- DQN/DDPG 可调参数（稳定性/时长实验） ----------
+    # 覆盖 DQN warmup step 数，输入 int，可为 None。
+    parser.add_argument("--dqn-warmup-steps", type=int, default=None, help="Override DQN warmup steps.")
     # 覆盖 DDPG warmup step 数，输入 int，可为 None。
     parser.add_argument("--ddpg-warmup-steps", type=int, default=None, help="Override DDPG warmup steps.")
     # 覆盖 DDPG actor 学习率，输入 float，可为 None。
@@ -178,6 +180,7 @@ def _save_run_report(args: argparse.Namespace, train_result: dict, env) -> Path:
         "best_eval_every": int(args.best_eval_every),
         "best_eval_episodes": int(args.best_eval_episodes),
         "update_interval": int(args.update_interval),
+        "dqn_warmup_steps": args.dqn_warmup_steps,
         "ddpg_warmup_steps": args.ddpg_warmup_steps,
         "ddpg_actor_lr": args.ddpg_actor_lr,
         "ddpg_critic_lr": args.ddpg_critic_lr,

@@ -75,8 +75,9 @@ REPLAY_BUFFER_CAPACITY = 20000
 DQN_HIDDEN_DIMS = (256, 256)
 DQN_LR = 1e-3
 DQN_TARGET_UPDATE_FREQ = 100  # 每 100 个训练 step 硬更新目标网络
+DQN_WARMUP_STEPS = 2000       # DQN warmup：仅采样回放，不更新参数
 EPSILON_START = 1.0
-EPSILON_DECAY = 0.98
+EPSILON_DECAY = 0.985
 EPSILON_MIN = 0.01
 
 # -----------------------------

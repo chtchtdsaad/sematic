@@ -27,6 +27,7 @@ from config import (
     DDPG_REWARD_CLIP,
     DDPG_REWARD_SCALE,
     DDPG_WARMUP_STEPS,
+    DQN_WARMUP_STEPS,
     EPISODE_LENGTH,
     EPSILON_DECAY,
     EPSILON_MIN,
@@ -202,7 +203,8 @@ def build_train_config(args: argparse.Namespace) -> dict[str, object]:
     # 若 CLI 未覆盖噪声衰减，使用 config 默认值。
     noise_decay = float(args.noise_std_decay) if args.noise_std_decay is not None else NOISE_STD_DECAY
     # 若 CLI 未覆盖 warmup 步数，使用 config 默认值。
-    warmup_steps = int(args.ddpg_warmup_steps) if args.ddpg_warmup_steps is not None else DDPG_WARMUP_STEPS
+    dqn_warmup_steps = int(args.dqn_warmup_steps) if args.dqn_warmup_steps is not None else DQN_WARMUP_STEPS
+    ddpg_warmup_steps = int(args.ddpg_warmup_steps) if args.ddpg_warmup_steps is not None else DDPG_WARMUP_STEPS
 
     # 返回训练配置字典；后续直接传给 run_training 使用。
     return {
@@ -216,7 +218,8 @@ def build_train_config(args: argparse.Namespace) -> dict[str, object]:
         "noise_std_start": NOISE_STD_START,  # float
         "noise_std_decay": noise_decay,  # float
         "noise_std_min": NOISE_STD_MIN,  # float
-        "ddpg_warmup_steps": warmup_steps,  # int
+        "dqn_warmup_steps": dqn_warmup_steps,  # int
+        "ddpg_warmup_steps": ddpg_warmup_steps,  # int
         "ddpg_reward_clip": DDPG_REWARD_CLIP,  # float
         "ddpg_reward_scale": DDPG_REWARD_SCALE,  # float
         "update_interval": max(1, int(args.update_interval)),  # int

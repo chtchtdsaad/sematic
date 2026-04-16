@@ -22,6 +22,7 @@ from config import (
     DDPG_REWARD_CLIP,
     DDPG_REWARD_SCALE,
     DDPG_WARMUP_STEPS,
+    DQN_WARMUP_STEPS,
     EPISODE_LENGTH,
     EPSILON_DECAY,
     EPSILON_MIN,
@@ -262,7 +263,8 @@ def run_training(algo: str, env, agent, config: dict[str, Any] | None = None) ->
     noise_decay = float(cfg.get("noise_std_decay", NOISE_STD_DECAY))
     noise_min = float(cfg.get("noise_std_min", NOISE_STD_MIN))
 
-    # DDPG 稳定化参数
+    # DQN/DDPG 稳定化参数
+    dqn_warmup_steps = int(cfg.get("dqn_warmup_steps", DQN_WARMUP_STEPS))
     ddpg_warmup_steps = int(cfg.get("ddpg_warmup_steps", DDPG_WARMUP_STEPS))
     ddpg_reward_clip = float(cfg.get("ddpg_reward_clip", DDPG_REWARD_CLIP))
     ddpg_reward_scale = float(cfg.get("ddpg_reward_scale", DDPG_REWARD_SCALE))
@@ -298,6 +300,7 @@ def run_training(algo: str, env, agent, config: dict[str, Any] | None = None) ->
     best_metric_value = float("inf")
     best_model_path: Path | None = None
     last_model_path: Path | None = None
+    dqn_warmup_end_logged = False
     # 记录训练开始时间戳，最终用于统计 train_seconds。
     train_start_ts = time.perf_counter()
 
@@ -311,12 +314,18 @@ def run_training(algo: str, env, agent, config: dict[str, Any] | None = None) ->
         total_sum_aoi = 0.0
         episode_steps = 0
         episode_trained = False
+        episode_used_dqn_warmup = False
 
         # ---------- step 循环 ----------
         for _ in range(episode_length):
             if algo == "DQN":
-                # DQN: 直接输出离散 action_id
-                action_id = agent.select_action(state, epsilon)
+                # DQN warmup: 前若干步仅随机采样，不做参数更新。
+                in_dqn_warmup = global_step < dqn_warmup_steps
+                if in_dqn_warmup:
+                    action_id = int(np.random.randint(0, env.num_actions))
+                    episode_used_dqn_warmup = True
+                else:
+                    action_id = agent.select_action(state, epsilon)
 
                 # 与环境交互
                 next_state, reward, done = env.step(action_id)
@@ -325,10 +334,10 @@ def run_training(algo: str, env, agent, config: dict[str, Any] | None = None) ->
                 buffer.push(state, action_id, reward, next_state, done)
             else:
                 # DDPG: 归一化状态
-                state_norm = _normalize_state_for_ddpg(state, env)
+                # state_norm = _normalize_state_for_ddpg(state, env)
 
                 # 连续动作（shape=(N,)）
-                virtual_action = agent.select_action(state_norm, noise_std)
+                virtual_action = agent.select_action(state, noise_std)
 
                 # 连续动作映射为 assignment（长度 n，值域 0..m）。
                 assignment = map_continuous_to_assignment(virtual_action, n=env.n, m=env.m)
@@ -336,14 +345,14 @@ def run_training(algo: str, env, agent, config: dict[str, Any] | None = None) ->
                 # 环境交互（DDPG 直接走 assignment，不依赖离散 action_space）。
                 next_state, reward, done = env.step_assignment(assignment)
 
-                # next_state 同样归一化
-                next_state_norm = _normalize_state_for_ddpg(next_state, env)
+                # # next_state 同样归一化
+                # next_state_norm = _normalize_state_for_ddpg(next_state, env)
 
-                # 训练奖励做裁剪缩放（降低数值跨度）
-                reward_train = max(-ddpg_reward_clip, min(ddpg_reward_clip, reward)) / ddpg_reward_scale
+                # # 训练奖励做裁剪缩放（降低数值跨度）
+                # reward_train = max(-ddpg_reward_clip, min(ddpg_reward_clip, reward)) / ddpg_reward_scale
 
                 # 存连续动作到 buffer（Critic 需要连续动作）
-                buffer.push(state_norm, virtual_action, reward_train, next_state_norm, done)
+                buffer.push(state, virtual_action, reward, next_state, done)
 
             # 更新当前状态
             state = next_state
@@ -360,7 +369,7 @@ def run_training(algo: str, env, agent, config: dict[str, Any] | None = None) ->
 
             # 训练触发条件
             if algo == "DQN":
-                ready_for_train = len(buffer) > batch_size
+                ready_for_train = (len(buffer) > batch_size) and (global_step > dqn_warmup_steps)
             else:
                 ready_for_train = (len(buffer) > batch_size) and (global_step > ddpg_warmup_steps)
 
@@ -448,8 +457,13 @@ def run_training(algo: str, env, agent, config: dict[str, Any] | None = None) ->
 
         # 更新探索参数
         if algo == "DQN":
-            epsilon = max(epsilon_min, epsilon * epsilon_decay)
-            info = f"epsilon={epsilon:.4f}"
+            dqn_warmup_on = dqn_warmup_steps > 0 and global_step <= dqn_warmup_steps
+            if not dqn_warmup_on:
+                epsilon = max(epsilon_min, epsilon * epsilon_decay)
+            info = (
+                f"epsilon={epsilon:.4f}"
+
+            )
         else:
             noise_std = max(noise_min, noise_std * noise_decay)
 

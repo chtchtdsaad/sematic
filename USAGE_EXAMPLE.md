@@ -47,7 +47,7 @@ pip install numpy scipy matplotlib torch
 
 ### 2.3 仅 DQN 相关说明
 
-- 当前 CLI 没有 `dqn-*` 专属参数。  
+- `--dqn-warmup-steps <int>`：DQN warmup 步数（warmup 阶段仅随机采样，不更新参数；并冻结 epsilon 衰减）。  
 - DQN 的学习率、epsilon 等参数来自 `config.py`（如 `DQN_LR`, `EPSILON_DECAY`）。
 - 当前 DQN 仅支持 `--scenario base`。
 
@@ -58,13 +58,13 @@ pip install numpy scipy matplotlib torch
 #### DQN-Train-Basic（保存主要结果）
 
 ```bash
-python main.py --algo DQN --scenario base --mode train --seed 42 --episodes 300 --device cpu --save-checkpoints 1 --save-history 1 --save-plots 1 --save-diagnostic-plots 1 --best-select-mode eval --best-eval-every 10 --best-eval-episodes 3 --update-interval 1
+python main.py --algo DQN --scenario base --mode train --seed 42 --episodes 300 --device cpu --dqn-warmup-steps 2000 --save-checkpoints 1 --save-history 1 --save-plots 1 --save-diagnostic-plots 1 --best-select-mode eval --best-eval-every 10 --best-eval-episodes 3 --update-interval 1
 ```
 
 #### DQN-Train-Fast（快速回归，不落盘）
 
 ```bash
-python main.py --algo DQN --scenario base --mode train --seed 1 --episodes 1 --device cpu --save-checkpoints 0 --save-history 0 --save-plots 0 --save-diagnostic-plots 0 --best-select-mode eval --best-eval-every 1 --best-eval-episodes 1 --update-interval 1
+python main.py --algo DQN --scenario base --mode train --seed 1 --episodes 1 --device cpu --dqn-warmup-steps 0 --save-checkpoints 0 --save-history 0 --save-plots 0 --save-diagnostic-plots 0 --best-select-mode eval --best-eval-every 1 --best-eval-episodes 1 --update-interval 1
 ```
 
 ### 3.2 仅 DDPG 训练命令

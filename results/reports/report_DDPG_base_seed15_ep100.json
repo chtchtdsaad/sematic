@@ -4,7 +4,7 @@
   "n": 6,
   "m": 3,
   "seed": 15,
-  "episodes": 200,
+  "episodes": 100,
   "best_select_mode": "eval",
   "best_eval_every": 10,
   "best_eval_episodes": 3,
@@ -14,8 +14,8 @@
   "ddpg_critic_lr": null,
   "noise_std_decay": null,
   "best_metric_source": "eval",
-  "best_metric_value": 50.58521545235362,
+  "best_metric_value": 68.86039102824921,
   "best_model_path": null,
   "last_model_path": null,
-  "train_seconds": 1409.0658687000396
+  "train_seconds": 802.8429116000189
 }
