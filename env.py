@@ -530,4 +530,7 @@ if __name__ == "__main__":
     env = SemanticSchedulingEnv(seed=22)
     state = env.reset()
     print("state shape:", state.shape)
-    print("num_actions:", env.num_actions)
+    print("channel_bins:", env.channel_bins)
+    print("channel_scales:", env.channel_scales)
+    print("channel_loss:", env.channel_loss)
+    print("channel_state_probs:", env.channel_state_probs)

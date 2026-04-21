@@ -46,7 +46,7 @@ EPISODE_LENGTH = 500   # 每个 episode 的时长 T
 MAX_AOI = 30           # AoI 上限（用于控制状态爆炸）
 # 总 Tr(P) 截断系数（按传感器数量线性放大）
 # 规则: total_mse_cap = N * TRACE_P_CAP_PER_SENSOR
-TRACE_P_CAP_PER_SENSOR = 200.0
+TRACE_P_CAP_PER_SENSOR = 300.0
 
 # Rayleigh 衰落尺度参数范围（每个 sensor-channel 对独立采样一个固定 scale）
 RAYLEIGH_SCALE_MIN = 0.5
@@ -54,7 +54,7 @@ RAYLEIGH_SCALE_MAX = 2.0
 
 # A 矩阵谱半径限制
 MIN_SPECTRAL_RADIUS = 1.0
-MAX_SPECTRAL_RADIUS = 1.3
+MAX_SPECTRAL_RADIUS = 1.4
 
 # -----------------------------
 # 可复现性
