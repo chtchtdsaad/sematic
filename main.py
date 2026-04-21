@@ -168,6 +168,15 @@ def _save_run_report(args: argparse.Namespace, train_result: dict, env) -> Path:
     # 报告命名格式：report_{algo}_seed{seed}_ep{episodes}.json
     report_path = report_dir / f"report_{args.algo}_{args.scenario}_seed{args.seed}_ep{args.episodes}.json"
 
+    def _round_floats(obj, ndigits: int = 4):
+        if isinstance(obj, float):
+            return round(obj, ndigits)
+        if isinstance(obj, dict):
+            return {k: _round_floats(v, ndigits) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_round_floats(v, ndigits) for v in obj]
+        return obj
+
     # 将本轮关键配置和关键指标写入结构化字典，便于脚本化统计。
     payload = {
         "algo": args.algo,
@@ -190,7 +199,12 @@ def _save_run_report(args: argparse.Namespace, train_result: dict, env) -> Path:
         "best_model_path": train_result.get("best_model_path"),
         "last_model_path": train_result.get("last_model_path"),
         "train_seconds": train_result.get("train_seconds"),
+        "train_end_selection_stats": train_result.get("train_end_selection_stats"),
+        "per_sensor_spectral_radius": train_result.get("per_sensor_spectral_radius"),
+        "per_channel_scale": train_result.get("per_channel_scale"),
     }
+    # 统一将 report 内的浮点数保留 4 位小数。
+    payload = _round_floats(payload, ndigits=4)
     # 写盘为 UTF-8 JSON；ensure_ascii=False 保留中文可读性。
     report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     # 返回绝对路径，方便上层日志直接打印。

@@ -1,0 +1,90 @@
+{
+  "algo": "DQN",
+  "scenario": "base",
+  "n": 6,
+  "m": 3,
+  "seed": 22,
+  "episodes": 300,
+  "best_select_mode": "eval",
+  "best_eval_every": 10,
+  "best_eval_episodes": 3,
+  "update_interval": 2,
+  "dqn_warmup_steps": null,
+  "ddpg_warmup_steps": null,
+  "ddpg_actor_lr": null,
+  "ddpg_critic_lr": null,
+  "noise_std_decay": null,
+  "best_metric_source": "eval",
+  "best_metric_value": 39.8951,
+  "best_model_path": null,
+  "last_model_path": null,
+  "train_seconds": 654.3134,
+  "train_end_selection_stats": {
+    "per_channel_selected_sensor_aoi_mean": [
+      2.1105,
+      2.1504,
+      2.1071
+    ],
+    "per_sensor_selected_count": [
+      80920,
+      61961,
+      79063,
+      76009,
+      64847,
+      87200
+    ],
+    "per_sensor_avg_aoi_when_selected": [
+      1.9462,
+      2.5659,
+      2.0453,
+      2.0759,
+      2.4479,
+      1.8405
+    ],
+    "sensor_channel_count": [
+      [
+        27458,
+        25777,
+        27685
+      ],
+      [
+        19777,
+        21765,
+        20419
+      ],
+      [
+        24716,
+        23366,
+        30981
+      ],
+      [
+        25598,
+        27296,
+        23115
+      ],
+      [
+        21749,
+        20476,
+        22622
+      ],
+      [
+        30702,
+        31320,
+        25178
+      ]
+    ]
+  },
+  "per_sensor_spectral_radius": [
+    1.1837,
+    1.0201,
+    1.1476,
+    1.1651,
+    1.0439,
+    1.2205
+  ],
+  "per_channel_scale": [
+    1.6418,
+    1.6265,
+    1.3257
+  ]
+}

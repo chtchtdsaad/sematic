@@ -1,0 +1,67 @@
+{
+  "algo": "DDPG",
+  "scenario": "s10x5",
+  "n": 10,
+  "m": 5,
+  "seed": 21,
+  "episodes": 300,
+  "best_select_mode": "eval",
+  "best_eval_every": 10,
+  "best_eval_episodes": 3,
+  "update_interval": 1,
+  "dqn_warmup_steps": null,
+  "ddpg_warmup_steps": null,
+  "ddpg_actor_lr": null,
+  "ddpg_critic_lr": null,
+  "noise_std_decay": null,
+  "best_metric_source": "eval",
+  "best_metric_value": 160.55128256204193,
+  "best_model_path": null,
+  "last_model_path": null,
+  "train_seconds": 2380.469317100011,
+  "train_end_selection_stats": {
+    "per_channel_selected_sensor_aoi_mean": [
+      2.2536266666666664,
+      2.19192,
+      2.1254,
+      2.08728,
+      2.0428466666666667
+    ],
+    "per_sensor_selected_count": [
+      73835,
+      91160,
+      124548,
+      57514,
+      76421,
+      66937,
+      93338,
+      37657,
+      50266,
+      78324
+    ],
+    "per_sensor_avg_aoi_when_selected": [
+      2.2133811877835714,
+      1.7774243089074155,
+      1.2946735395189004,
+      2.7351253607817227,
+      2.06778241582811,
+      2.4253253058846376,
+      1.7172427092931069,
+      4.1582175956661445,
+      3.158834997811642,
+      2.108306521628109
+    ]
+  },
+  "per_sensor_spectral_radius": [
+    1.2522857663495615,
+    1.268823702610715,
+    1.3816628128722053,
+    1.1888941978849377,
+    1.289511625676062,
+    1.1104544122974056,
+    1.3271693897543813,
+    1.0306952893237338,
+    1.13572007299509,
+    1.2511173869292527
+  ]
+}

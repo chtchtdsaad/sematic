@@ -293,6 +293,12 @@ def run_training(algo: str, env, agent, config: dict[str, Any] | None = None) ->
 
     mse_history: list[float] = []
     sum_aoi_history: list[float] = []
+    # 训练完成后统计（全训练区间聚合，不分 warmup/post-warmup）
+    per_channel_select_count = np.zeros(env.m, dtype=np.int64)            # shape=(m,)
+    per_channel_selected_sensor_aoi_sum = np.zeros(env.m, dtype=np.float64)  # shape=(m,)
+    per_sensor_selected_count = np.zeros(env.n, dtype=np.int64)           # shape=(n,)
+    per_sensor_selected_aoi_sum = np.zeros(env.n, dtype=np.float64)       # shape=(n,)
+    sensor_channel_count = np.zeros((env.n, env.m), dtype=np.int64)       # shape=(n,m)
 
     global_step = 0
     best_mse = float("inf")
@@ -318,6 +324,9 @@ def run_training(algo: str, env, agent, config: dict[str, Any] | None = None) ->
 
         # ---------- step 循环 ----------
         for _ in range(episode_length):
+            # 记录调度前 AoI（用于“被选中时 AoI”统计）
+            aoi_before_step = env.aoi.astype(np.float64, copy=True)
+
             if algo == "DQN":
                 # DQN warmup: 前若干步仅随机采样，不做参数更新。
                 in_dqn_warmup = global_step < dqn_warmup_steps
@@ -326,6 +335,8 @@ def run_training(algo: str, env, agent, config: dict[str, Any] | None = None) ->
                     episode_used_dqn_warmup = True
                 else:
                     action_id = agent.select_action(state, epsilon)
+                # DQN 通过离散动作索引解码 assignment。
+                assignment = tuple(int(x) for x in env.action_space[action_id])
 
                 # 与环境交互
                 next_state, reward, done = env.step(action_id)
@@ -353,6 +364,17 @@ def run_training(algo: str, env, agent, config: dict[str, Any] | None = None) ->
 
                 # 存连续动作到 buffer（Critic 需要连续动作）
                 buffer.push(state, virtual_action, reward, next_state, done)
+
+            # 聚合“训练完成后”统计（单份，不分 warmup）
+            for sensor_idx, channel_id in enumerate(assignment):
+                if channel_id <= 0:
+                    continue
+                c_idx = int(channel_id) - 1
+                per_channel_select_count[c_idx] += 1
+                per_channel_selected_sensor_aoi_sum[c_idx] += float(aoi_before_step[sensor_idx])
+                per_sensor_selected_count[sensor_idx] += 1
+                per_sensor_selected_aoi_sum[sensor_idx] += float(aoi_before_step[sensor_idx])
+                sensor_channel_count[sensor_idx, c_idx] += 1
 
             # 更新当前状态
             state = next_state
@@ -503,6 +525,26 @@ def run_training(algo: str, env, agent, config: dict[str, Any] | None = None) ->
     # 训练总耗时（秒）。
     train_seconds = float(time.perf_counter() - train_start_ts)
 
+    # ---------- 训练完成后统计汇总 ----------
+    per_channel_selected_sensor_aoi_mean = np.divide(
+        per_channel_selected_sensor_aoi_sum,
+        np.maximum(per_channel_select_count, 1),
+        dtype=np.float64,
+    ).tolist()
+    per_sensor_avg_aoi_when_selected = np.divide(
+        per_sensor_selected_aoi_sum,
+        np.maximum(per_sensor_selected_count, 1),
+        dtype=np.float64,
+    ).tolist()
+
+    # 每个 sensor 的 A 矩阵谱半径，shape=(n)
+    per_sensor_spectral_radius = [
+        float(np.max(np.abs(np.linalg.eigvals(a_mat))))
+        for a_mat in env.a_mats
+    ]
+    # 每个信道的 scale（按 sensor 维度取均值，shape=(m)）
+    per_channel_scale = np.mean(env.channel_scales, axis=0).astype(np.float64).tolist()
+
     return {
         "mse_history": mse_history,
         "sum_aoi_history": sum_aoi_history,
@@ -512,6 +554,14 @@ def run_training(algo: str, env, agent, config: dict[str, Any] | None = None) ->
         "best_metric_source": best_metric_source,
         "best_metric_value": float(best_metric_value) if np.isfinite(best_metric_value) else None,
         "train_seconds": train_seconds,
+        "train_end_selection_stats": {
+            "per_channel_selected_sensor_aoi_mean": per_channel_selected_sensor_aoi_mean,
+            "per_sensor_selected_count": per_sensor_selected_count.astype(int).tolist(),
+            "per_sensor_avg_aoi_when_selected": per_sensor_avg_aoi_when_selected,
+            "sensor_channel_count": sensor_channel_count.astype(int).tolist(),
+        },
+        "per_sensor_spectral_radius": per_sensor_spectral_radius,
+        "per_channel_scale": per_channel_scale,
     }
 
 

@@ -15,8 +15,8 @@
   "ddpg_critic_lr": null,
   "noise_std_decay": null,
   "best_metric_source": "eval",
-  "best_metric_value": 84.16407328869053,
+  "best_metric_value": 82.03416772836475,
   "best_model_path": null,
   "last_model_path": null,
-  "train_seconds": 269.54478699999163
+  "train_seconds": 240.8464393000031
 }

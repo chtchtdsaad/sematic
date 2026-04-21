@@ -73,9 +73,9 @@ REPLAY_BUFFER_CAPACITY = 20000
 # DQN 超参数
 # -----------------------------
 DQN_HIDDEN_DIMS = (256, 256)
-DQN_LR = 1e-3
+DQN_LR = 1e-4
 DQN_TARGET_UPDATE_FREQ = 100  # 每 100 个训练 step 硬更新目标网络
-DQN_WARMUP_STEPS = 2000       # DQN warmup：仅采样回放，不更新参数
+DQN_WARMUP_STEPS = 0       # DQN warmup：仅采样回放，不更新参数
 EPSILON_START = 1.0
 EPSILON_DECAY = 0.985
 EPSILON_MIN = 0.01
@@ -90,12 +90,12 @@ DDPG_CRITIC_LR = 1e-3
 DDPG_TAU = 0.005  # 目标网络软更新系数
 
 # 300 episode 的学习率衰减目标（指数衰减终点）
-DDPG_ACTOR_LR_END = 1e-4
-DDPG_CRITIC_LR_END = 1e-3
+DDPG_ACTOR_LR_END = 1e-5
+DDPG_CRITIC_LR_END = 1e-4
 
 # 噪声调度（约 300 episode 从 0.25 衰减到 0.03）
-NOISE_STD_START = 0.10
-NOISE_STD_DECAY = 0.98
+NOISE_STD_START = 0.20
+NOISE_STD_DECAY = 0.985
 NOISE_STD_MIN = 0.005
 
 # DDPG 稳定化
