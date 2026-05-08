@@ -1,0 +1,90 @@
+{
+  "algo": "DQN",
+  "scenario": "base",
+  "n": 6,
+  "m": 3,
+  "seed": 24,
+  "episodes": 300,
+  "best_select_mode": "eval",
+  "best_eval_every": 10,
+  "best_eval_episodes": 3,
+  "update_interval": 2,
+  "dqn_warmup_steps": null,
+  "ddpg_warmup_steps": null,
+  "ddpg_actor_lr": null,
+  "ddpg_critic_lr": null,
+  "noise_std_decay": null,
+  "best_metric_source": "eval",
+  "best_metric_value": 82.439,
+  "best_model_path": "C:\\Users\\28681\\Desktop\\Kalman\\sematic\\results\\checkpoints\\dqn_base_seed24_best.pt",
+  "last_model_path": "C:\\Users\\28681\\Desktop\\Kalman\\sematic\\results\\checkpoints\\dqn_base_seed24_last.pt",
+  "train_seconds": 414.6047,
+  "train_end_selection_stats": {
+    "per_channel_selected_sensor_aoi_mean": [
+      2.2894,
+      2.1369,
+      2.0997
+    ],
+    "per_sensor_selected_count": [
+      71678,
+      72657,
+      64672,
+      84366,
+      59115,
+      97512
+    ],
+    "per_sensor_avg_aoi_when_selected": [
+      2.2739,
+      2.2257,
+      2.5928,
+      1.9216,
+      2.7118,
+      1.6826
+    ],
+    "sensor_channel_count": [
+      [
+        19089,
+        30382,
+        22207
+      ],
+      [
+        25525,
+        22375,
+        24757
+      ],
+      [
+        32513,
+        19352,
+        12807
+      ],
+      [
+        20907,
+        42358,
+        21101
+      ],
+      [
+        25777,
+        13074,
+        20264
+      ],
+      [
+        26189,
+        22459,
+        48864
+      ]
+    ]
+  },
+  "per_sensor_spectral_radius": [
+    1.2257,
+    1.164,
+    1.1513,
+    1.2863,
+    1.123,
+    1.3283
+  ],
+  "per_channel_scale": [
+    0.9371,
+    1.3167,
+    1.4396
+  ]
+}

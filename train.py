@@ -36,33 +36,6 @@ from config import (
 from utils import map_continuous_to_assignment
 
 
-def _normalize_state_for_ddpg(state: np.ndarray, env) -> np.ndarray:
-    """
-    作用:
-        将环境状态归一化后输入 DDPG，降低不同量纲对训练稳定性的影响。
-
-    输入格式:
-        state: np.ndarray[float], shape=(state_dim,)
-        env: 环境对象（需包含 n / max_aoi / channel_bins）
-
-    输出格式:
-        np.ndarray[float32], shape=(state_dim,)
-
-    核心步骤:
-        1. 复制并转为 float32。
-        2. AoI 部分除以 max_aoi。
-        3. H_t 索引部分除以离散状态数（5）。
-    """
-    # 复制状态并转 float32，避免原地污染外部数组
-    s = np.asarray(state, dtype=np.float32).copy()
-
-    # AoI 段归一化，shape=(N,)
-    s[: env.n] = s[: env.n] / float(env.max_aoi)
-
-    # H_t 段归一化，shape=(N*M,)
-    s[env.n :] = s[env.n :] / float(len(env.channel_bins) + 1)
-
-    return s
 
 
 def _build_checkpoint(algo: str, agent, meta: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -337,15 +310,13 @@ def run_training(algo: str, env, agent, config: dict[str, Any] | None = None) ->
                     action_id = agent.select_action(state, epsilon)
                 # DQN 通过离散动作索引解码 assignment。
                 assignment = tuple(int(x) for x in env.action_space[action_id])
-
+            
                 # 与环境交互
                 next_state, reward, done = env.step(action_id)
-
                 # 存离散动作到 buffer
                 buffer.push(state, action_id, reward, next_state, done)
             else:
                 # DDPG: 归一化状态
-                # state_norm = _normalize_state_for_ddpg(state, env)
 
                 # 连续动作（shape=(N,)）
                 virtual_action = agent.select_action(state, noise_std)
@@ -357,7 +328,6 @@ def run_training(algo: str, env, agent, config: dict[str, Any] | None = None) ->
                 next_state, reward, done = env.step_assignment(assignment)
 
                 # # next_state 同样归一化
-                # next_state_norm = _normalize_state_for_ddpg(next_state, env)
 
                 # # 训练奖励做裁剪缩放（降低数值跨度）
                 # reward_train = max(-ddpg_reward_clip, min(ddpg_reward_clip, reward)) / ddpg_reward_scale
@@ -627,8 +597,8 @@ def run_evaluation(
                 next_state, reward, done = env.step(action_id)
             else:
                 # DDPG 评估时用确定性动作（noise=0）
-                state_norm = _normalize_state_for_ddpg(state, env)
-                virtual_action = agent.select_action(state_norm, noise_std=0.0)
+                virtual_action = agent.select_action(state, noise_std=0.0)
+                
                 assignment = map_continuous_to_assignment(virtual_action, n=env.n, m=env.m)
                 # DDPG 评估同样直接走 assignment 接口。
                 next_state, reward, done = env.step_assignment(assignment)

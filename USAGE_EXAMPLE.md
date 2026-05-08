@@ -126,21 +126,70 @@ python main.py --algo DQN --scenario base --mode eval --seed 42 --device cpu --m
 python main.py --algo DDPG --scenario s20x10 --mode eval --seed 42 --device cpu --model-path results\checkpoints\ddpg_s20x10_seed42_best.pt --eval-episodes 10 --save-plots 1
 ```
 
-## 5. 输出文件说明（通用）
+### 4.3 eval_attack（攻击评估）
 
-### 5.1 展示曲线（`--save-plots 1`）
+#### eval_attack-DQN-clean
+
+```bash
+python eval_attack.py --algo DQN --scenario base --seed 24 --device cpu --model-path results\checkpoints\dqn_base_seed24_best.pt --eval-episodes 10 --attack-mode clean
+```
+
+#### eval_attack-DDPG-clean
+
+```bash
+python eval_attack.py --algo DDPG --scenario base --seed 24 --device cpu --model-path results\checkpoints\ddpg_base_seed24_best.pt --eval-episodes 10 --attack-mode clean
+```
+
+#### eval_attack-默认 best checkpoint（model-path 留空）
+
+```bash
+python eval_attack.py --algo DQN --scenario base --seed 24 --device cpu --eval-episodes 10 --attack-mode clean
+python eval_attack.py --algo DDPG --scenario base --seed 24 --device cpu --eval-episodes 10 --attack-mode clean
+```
+
+## 5. 攻击评估命令模板
+
+本节命令只运行评估，不保存 checkpoint、history、图片；默认只把 JSON 报告保存到 `results/attack_reports/`。
+
+### 5.1 DQN：约束 random_aoi
+
+```bash
+python eval_attack.py --algo DQN --scenario base --seed 24 --device cpu --eval-episodes 10 --attack-mode random_aoi --attack-prob 0.2 --max-attack-ratio 0.2 --aoi-delta 1 --max-aoi-features 1 --max-total-features 1 --aoi-direction random --strict-budget 1
+```
+
+### 5.2 DQN：约束 random_h
+
+```bash
+python eval_attack.py --algo DQN --scenario base --seed 24 --device cpu --eval-episodes 10 --attack-mode random_h --attack-prob 0.2 --max-attack-ratio 0.2 --h-delta 1 --max-h-features 2 --max-total-features 2 --h-direction random --strict-budget 1
+```
+
+### 5.3 DQN：约束 random_joint
+
+```bash
+python eval_attack.py --algo DQN --scenario base --seed 24 --device cpu --eval-episodes 10 --attack-mode random_joint --attack-prob 0.2 --max-attack-ratio 0.2 --aoi-delta 1 --h-delta 1 --max-aoi-features 1 --max-h-features 2 --max-total-features 3 --aoi-direction random --h-direction random --strict-budget 1
+```
+
+### 5.4 DDPG：约束 random_joint
+
+```bash
+python eval_attack.py --algo DDPG --scenario base --seed 24 --device cpu --eval-episodes 10 --attack-mode random_joint --attack-prob 0.2 --max-attack-ratio 0.2 --aoi-delta 1 --h-delta 1 --max-aoi-features 1 --max-h-features 2 --max-total-features 3 --aoi-direction random --h-direction random --strict-budget 1
+```
+
+## 6. 输出文件说明（通用）
+
+### 6.1 展示曲线（`--save-plots 1`）
 
 - `results/result_{algo}_{scenario}_seed{seed}.png`
 - `results/result_{algo}_{scenario}_seed{seed}_sumaoi.png`
 - 训练展示图采用动态纵轴：按最后 10% episode 的均值构造范围，目标比例固定 35%，并对超出上界的点做硬裁剪。
 
-### 5.2 诊断曲线（`--save-diagnostic-plots 1`）
+### 6.2 诊断曲线（`--save-diagnostic-plots 1`）
 
 - `results/result_{algo}_{scenario}_seed{seed}_raw_mse.png`
 - `results/result_{algo}_{scenario}_seed{seed}_log_mse.png`
 - 诊断图不使用动态纵轴（保持原始诊断行为）。
 
-### 5.3 训练报告（每次 train 都会生成）
+### 6.3 训练报告（每次 train 都会生成）
 
 - `results/reports/report_{algo}_{scenario}_seed{seed}_ep{episodes}.json`
 - 关键字段：
@@ -148,7 +197,23 @@ python main.py --algo DDPG --scenario s20x10 --mode eval --seed 42 --device cpu 
   - `best_metric_value`
   - `train_seconds`
 
-### 5.4 history 与跨算法对比（`--save-history 1`）
+### 6.4 eval_attack 攻击评估报告
+
+- `results/attack_reports/attack_eval_{algo}_{scenario}_seed{seed}_{attack_mode}.json`
+- 关键字段：
+  - `attack_mode`
+  - `checkpoint_path`
+  - `clean_mean_mse`
+  - `attack_mean_mse`
+  - `mse_degradation`
+  - `clean_mean_sum_aoi`
+  - `attack_mean_sum_aoi`
+  - `sum_aoi_degradation`
+  - `attack_step_ratio`
+  - `action_flip_ratio`
+  - `constraint_violation_count`
+
+### 6.5 history 与跨算法对比（`--save-history 1`）
 
 - `results/histories/{algo}_{scenario}_seed{seed}_ep{episodes}.npz`
 - 若 DQN 和 DDPG 同配置 history 同时存在，且 `--save-plots 1`，会输出：
@@ -156,7 +221,7 @@ python main.py --algo DDPG --scenario s20x10 --mode eval --seed 42 --device cpu 
   - `results/compare_DQN_DDPG_{scenario}_seed{seed}_ep{episodes}_sumaoi.png`
 - 对比图采用动态纵轴：基准取 DQN/DDPG 最后 10% 均值中的较大值，目标比例固定 35%，并进行硬裁剪。
 
-## 6. 防混用提示（务必看）
+## 7. 防混用提示（务必看）
 
 1. 你在跑 `--algo DQN` 时，不要加 `--ddpg-*` 参数。  
 2. 你在跑 `--algo DDPG` 时，可以用 `--ddpg-*` 组合调稳定性。  

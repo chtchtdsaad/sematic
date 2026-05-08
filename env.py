@@ -529,7 +529,7 @@ if __name__ == "__main__":
     # 快速自测
     env = SemanticSchedulingEnv(seed=22)
     state = env.reset()
-    print("state shape:", state.shape)
+    print("state:", state)
     print("channel_bins:", env.channel_bins)
     print("channel_scales:", env.channel_scales)
     print("channel_loss:", env.channel_loss)
