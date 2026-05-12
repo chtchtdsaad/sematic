@@ -17,6 +17,14 @@ class DummyAttackEnv:
         self.aoi = np.array([1, 1], dtype=np.int64)
         self.channel_state = np.array([[0], [0]], dtype=np.int64)
         self.channel_loss = np.array([[0.0], [0.0]], dtype=np.float64)
+        self.p_bars = [np.eye(2, dtype=np.float64), 2.0 * np.eye(2, dtype=np.float64)]
+        self.a_mats = [np.eye(2, dtype=np.float64), np.eye(2, dtype=np.float64)]
+        self.w_mats = [np.eye(2, dtype=np.float64), np.eye(2, dtype=np.float64)]
+        self.a_powers_cache = [np.repeat(np.eye(2, dtype=np.float64)[None, :, :], 6, axis=0) for _ in range(2)]
+        self.noise_cov_sums_cache = [
+            np.stack([float(k) * np.eye(2, dtype=np.float64) for k in range(6)], axis=0)
+            for _ in range(2)
+        ]
         self.actions: list[int] = []
         self._step = 0
 
@@ -79,6 +87,42 @@ def test_run_attack_eval_uses_attacked_action_and_collects_stats() -> None:
     assert result["mean_sum_aoi"] == 3.0
     assert result["attack_step_ratio"] == 1.0
     assert result["action_flip_ratio"] == 1.0
+    assert result["constraint_violation_count"] == 0
+
+
+def test_run_attack_eval_dispatches_structural_mislead_attack() -> None:
+    from eval_attack import run_attack_eval
+
+    env = DummyAttackEnv()
+    agent = ThresholdDQNAgent()
+    config = AttackConfig(
+        mode="semantic_aoi_mislead",
+        seed=123,
+        attack_prob=1.0,
+        strict_budget=True,
+        max_attack_ratio=1.0,
+        max_consecutive_steps=10,
+        aoi_delta=2,
+        h_delta=1,
+        max_aoi_features=2,
+        max_h_features=1,
+        max_total_features=2,
+    )
+
+    result = run_attack_eval(
+        algo="DQN",
+        env=env,
+        agent=agent,
+        attack_config=config,
+        eval_episodes=1,
+        episode_length=3,
+        verbose=False,
+    )
+
+    assert result["attack_mode"] == "semantic_aoi_mislead"
+    assert result["attack_step_ratio"] == 1.0
+    assert result["avg_aoi_l0_per_step"] == 2.0
+    assert result["avg_h_l0_per_step"] == 0.0
     assert result["constraint_violation_count"] == 0
 
 

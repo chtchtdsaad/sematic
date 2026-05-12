@@ -47,20 +47,12 @@ def test_select_dqn_action_uses_greedy_policy_and_returns_int() -> None:
     np.testing.assert_array_equal(agent.calls[0][0], state)
 
 
-def test_select_ddpg_assignment_normalizes_state_and_maps_to_tuple(monkeypatch) -> None:
+def test_select_ddpg_assignment_uses_raw_state_and_maps_to_tuple() -> None:
     import attacks.action_utils as action_utils
 
     env = DummyEnv()
     agent = DummyDDPGAgent()
     state = np.array([5, 10, 1, 0, 2, 4, 1, 3, 0], dtype=np.float32)
-    normalized_state = np.full_like(state, 0.25, dtype=np.float32)
-
-    def fake_normalize(input_state, input_env):
-        assert input_env is env
-        np.testing.assert_array_equal(input_state, state)
-        return normalized_state
-
-    monkeypatch.setattr(action_utils, "_normalize_state_for_ddpg", fake_normalize)
 
     assignment = action_utils.select_ddpg_assignment(state, agent, env)
     unified_assignment = action_utils.select_action_for_eval("DDPG", state, agent, env)
@@ -69,7 +61,7 @@ def test_select_ddpg_assignment_normalizes_state_and_maps_to_tuple(monkeypatch) 
     assert unified_assignment == (0, 1, 2)
     assert isinstance(assignment, tuple)
     assert agent.calls[0][1] == 0.0
-    np.testing.assert_array_equal(agent.calls[0][0], normalized_state)
+    np.testing.assert_array_equal(agent.calls[0][0], state)
 
 
 def test_update_attack_step_stats_accumulates_perturbation_and_constraint_violation() -> None:

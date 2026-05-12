@@ -53,7 +53,7 @@ pip install numpy scipy matplotlib torch
 
 ### 2.4 eval_attack 攻击评估输入参数
 
-以下参数只用于 `eval_attack.py`，用于 clean / random_aoi / random_h / random_joint 攻击评估。`eval_attack.py` 不训练模型，不保存 checkpoint、history、图片，只按 `--save-report` 控制是否保存 JSON 报告。
+以下参数只用于 `eval_attack.py`，用于 clean、random 系列和已实现的结构化 mislead 攻击评估。`eval_attack.py` 不训练模型，不保存 checkpoint、history、图片，只按 `--save-report` 控制是否保存 JSON 报告。
 
 #### 2.4.1 基础评估参数
 
@@ -67,11 +67,14 @@ pip install numpy scipy matplotlib torch
 
 #### 2.4.2 攻击模式参数
 
-- `--attack-mode {clean,random_aoi,random_h,random_joint}`：攻击模式。
+- `--attack-mode {clean,random_aoi,random_h,random_joint,semantic_aoi_mislead,semantic_h_mislead,semantic_joint_mislead}`：攻击模式。
   - `clean`：不攻击，`attack_mean_*` 与 `clean_mean_*` 相同，攻击统计为 0。
   - `random_aoi`：只扰动 agent 看到的 AoI 段。
   - `random_h`：只扰动 agent 看到的信道状态 H 段。
   - `random_joint`：同时扰动 AoI 和 H，但仍受总稀疏预算约束。
+  - `semantic_aoi_mislead`：只扰动 AoI 观测，降低高风险 sensor 的观测 AoI，并抬高低风险诱饵 sensor 的观测 AoI。
+  - `semantic_h_mislead`：只扰动 H 观测，降低高风险高成功率链路的观测 H，并抬高低风险诱饵链路的观测 H。
+  - `semantic_joint_mislead`：同时执行 AoI 和 H 的结构化误导扰动。
 - `--attack-prob <float>`：每个 step 尝试攻击的概率，范围建议 `[0,1]`。例如 `0.2` 表示每步有 20% 概率尝试攻击。
 - `--max-attack-ratio <float>`：episode 内攻击步比例上限，范围建议 `[0,1]`。例如 `0.2` 表示最多攻击约 20% 的 step。
 - `--strict-budget {0,1}`：是否严格执行 `max_attack_ratio`。`1` 表示攻击步数达到预算后停止攻击。
@@ -94,6 +97,7 @@ pip install numpy scipy matplotlib torch
 - `--h-delta <int>`：H 单维最大扰动幅值。扰动后会执行 `round + clip`，保证 H 在 `[0,4]`。
 - `--max-h-features <int>`：每个 step 最多扰动多少个 H 维度。
 - `--h-direction {random,increase,decrease,mixed}`：H 扰动方向，含义与 `--aoi-direction` 相同。
+- H 的索引越大表示丢包率越低、信道越好。结构化 H 攻击中，降低 H 表示把优质链路伪装得更差，抬高 H 表示把诱饵链路伪装得更好。
 
 #### 2.4.5 总稀疏约束参数
 
@@ -224,6 +228,48 @@ python eval_attack.py --algo DQN --scenario base --seed 24 --device cpu --eval-e
 python eval_attack.py --algo DDPG --scenario base --seed 24 --device cpu --eval-episodes 10 --attack-mode random_joint --attack-prob 0.2 --max-attack-ratio 0.2 --aoi-delta 1 --h-delta 1 --max-aoi-features 1 --max-h-features 2 --max-total-features 3 --aoi-direction random --h-direction random --strict-budget 1
 ```
 
+### 5.5 DQN：结构化 AoI-only mislead
+
+```bash
+python eval_attack.py --algo DQN --scenario base --seed 24 --device cpu --eval-episodes 10 --attack-mode semantic_aoi_mislead --attack-prob 1.0 --max-attack-ratio 0.5 --aoi-delta 5 --max-aoi-features 2 --max-total-features 2 --strict-budget 1
+```
+
+### 5.6 DQN：结构化 H-only mislead
+
+```bash
+python eval_attack.py --algo DQN --scenario base --seed 24 --device cpu --eval-episodes 10 --attack-mode semantic_h_mislead --attack-prob 1.0 --max-attack-ratio 0.5 --h-delta 4 --max-h-features 4 --max-total-features 4 --strict-budget 1
+```
+
+### 5.7 DQN：结构化 Joint mislead
+
+```bash
+python eval_attack.py --algo DQN --scenario base --seed 24 --device cpu --eval-episodes 10 --attack-mode semantic_joint_mislead --attack-prob 1.0 --max-attack-ratio 0.5 --aoi-delta 5 --h-delta 4 --max-aoi-features 2 --max-h-features 4 --max-total-features 6 --strict-budget 1
+```
+
+### 5.8 DDPG：结构化 Joint mislead
+
+```bash
+python eval_attack.py --algo DDPG --scenario base --seed 24 --device cpu --eval-episodes 10 --attack-mode semantic_joint_mislead --attack-prob 1.0 --max-attack-ratio 0.5 --aoi-delta 5 --h-delta 4 --max-aoi-features 2 --max-h-features 4 --max-total-features 6 --strict-budget 1
+```
+
+### 5.9 小规模三档预算
+
+base 场景下 `N=6, M=3`，可以用以下三档预算比较 random 与结构化 mislead：
+
+```text
+轻度：--max-aoi-features 1 --max-h-features 2 --max-total-features 3
+中度：--max-aoi-features 2 --max-h-features 4 --max-total-features 6
+强度：--max-aoi-features 3 --max-h-features 6 --max-total-features 9
+```
+
+建议先固定：
+
+```text
+--attack-prob 1.0
+--max-attack-ratio 0.5
+--strict-budget 1
+```
+
 ## 6. 输出文件说明（通用）
 
 ### 6.1 展示曲线（`--save-plots 1`）
@@ -264,7 +310,7 @@ python eval_attack.py --algo DDPG --scenario base --seed 24 --device cpu --eval-
 
 #### 6.4.2 攻击配置字段
 
-- `attack_mode`：攻击模式，取值为 `clean`、`random_aoi`、`random_h`、`random_joint`。
+- `attack_mode`：攻击模式，取值为 `clean`、`random_aoi`、`random_h`、`random_joint`、`semantic_aoi_mislead`、`semantic_h_mislead`、`semantic_joint_mislead`。
 - `attack_prob`：每个 step 尝试攻击的概率。
 - `max_attack_ratio`：每个 episode 内攻击步比例上限。
 - `strict_budget`：是否严格执行攻击步预算。

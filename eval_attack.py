@@ -22,6 +22,11 @@ from attacks.action_utils import select_action_for_eval
 from attacks.attack_config import AttackConfig, build_attack_config_from_args
 from attacks.metrics import init_attack_stats, summarize_attack_stats, update_action_flip_stats, update_perturbation_stats
 from attacks.random_semantic import semantic_random_attack
+from attacks.structural_semantic import (
+    semantic_aoi_mislead_attack,
+    semantic_h_mislead_attack,
+    semantic_joint_mislead_attack,
+)
 from config import DEFAULT_SEED, EPISODE_LENGTH, SCENARIO_PRESETS
 from train import load_checkpoint
 from workflow import build_agent, build_env, resolve_device, set_global_seed
@@ -55,7 +60,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-episodes", type=int, default=10)
 
     # 攻击模式与时间预算参数。
-    parser.add_argument("--attack-mode", type=str, default="clean", choices=["clean", "random_aoi", "random_h", "random_joint"])
+    parser.add_argument(
+        "--attack-mode",
+        type=str,
+        default="clean",
+        choices=[
+            "clean",                   # 不攻击，只输出 clean 等价报告。
+            "random_aoi",              # 随机扰动 AoI 观测段。
+            "random_h",                # 随机扰动 H 观测段。
+            "random_joint",            # 随机同时扰动 AoI 和 H 观测段。
+            "semantic_aoi_mislead",    # 结构化 AoI-only 误导攻击。
+            "semantic_h_mislead",      # 结构化 H-only 误导攻击。
+            "semantic_joint_mislead",  # 结构化 AoI+H 联合误导攻击。
+        ],
+    )
     parser.add_argument("--attack-prob", type=float, default=0.2)
     parser.add_argument("--max-attack-ratio", type=float, default=0.2)
     parser.add_argument("--strict-budget", type=int, default=1, choices=[0, 1])
@@ -132,6 +150,68 @@ def _step_env_with_action(algo: str, env, action):
 
     # DDPG 走 assignment 接口。
     return env.step_assignment(action)
+
+
+def generate_attacked_state(state, env, config: AttackConfig, rng: np.random.Generator, attack_state: dict):
+    """
+    作用:
+        根据 attack mode 分发到 random 或结构化 mislead 攻击实现。
+
+    输入格式:
+        state: np.ndarray[float32], shape=(N + N*M,)。
+        env: 环境实例。
+        config: AttackConfig，包含 mode 和预算参数。
+        rng: np.random.Generator，攻击随机数发生器。
+        attack_state: dict，episode 内攻击预算状态。
+
+    输出格式:
+        tuple[np.ndarray, dict]，attacked_state 与扰动统计。
+
+    核心步骤:
+        1. clean/random_* 继续复用 semantic_random_attack。
+        2. semantic_*_mislead 分发到结构化攻击函数。
+        3. 未知 mode 立即报错。
+    """
+    # 从 AttackConfig 中读取攻击模式，所有分发都以 config.mode 为准。
+    mode = str(config.mode)
+    # clean/random 系列沿用原有 semantic_random_attack，保证旧行为不变。
+    if mode in {"clean", "random_aoi", "random_h", "random_joint"}:
+        return semantic_random_attack(
+            state=state,                 # 当前真实 state 副本输入。
+            env=env,                     # 环境只读使用，不允许攻击函数写回。
+            config=config,               # 攻击预算、幅值和模式配置。
+            rng=rng,                     # 攻击侧随机数发生器。
+            attack_state=attack_state,   # episode 内攻击步预算状态。
+        )
+    # AoI-only 结构化攻击：只改 agent 看到的 AoI 观测。
+    if mode == "semantic_aoi_mislead":
+        return semantic_aoi_mislead_attack(
+            state=state,                 # 当前真实 state 副本输入。
+            env=env,                     # 环境只读使用。
+            config=config,               # 攻击预算和 AoI delta 配置。
+            rng=rng,                     # 攻击触发概率使用的随机数发生器。
+            attack_state=attack_state,   # episode 内攻击步预算状态。
+        )
+    # H-only 结构化攻击：只改 agent 看到的 H 观测。
+    if mode == "semantic_h_mislead":
+        return semantic_h_mislead_attack(
+            state=state,                 # 当前真实 state 副本输入。
+            env=env,                     # 环境只读使用。
+            config=config,               # 攻击预算和 H delta 配置。
+            rng=rng,                     # 攻击触发概率使用的随机数发生器。
+            attack_state=attack_state,   # episode 内攻击步预算状态。
+        )
+    # Joint 结构化攻击：同时改 agent 看到的 AoI 和 H 观测。
+    if mode == "semantic_joint_mislead":
+        return semantic_joint_mislead_attack(
+            state=state,                 # 当前真实 state 副本输入。
+            env=env,                     # 环境只读使用。
+            config=config,               # 攻击预算、AoI delta 和 H delta 配置。
+            rng=rng,                     # 攻击触发概率使用的随机数发生器。
+            attack_state=attack_state,   # episode 内攻击步预算状态。
+        )
+    # 所有合法模式都应该在上面返回；走到这里说明 CLI 或配置传入了未知模式。
+    raise ValueError(f"unsupported attack mode: {mode}")
 
 
 def run_clean_eval(
@@ -285,7 +365,7 @@ def run_attack_eval(
             clean_action = select_action_for_eval(algo, state, agent, env)
 
             # attacked_state 是 agent 看到的状态副本，不写回 env。
-            attacked_state, perturb_info = semantic_random_attack(
+            attacked_state, perturb_info = generate_attacked_state(
                 state=state,
                 env=env,
                 config=attack_config,
