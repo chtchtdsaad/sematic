@@ -51,6 +51,55 @@ pip install numpy scipy matplotlib torch
 - DQN 的学习率、epsilon 等参数来自 `config.py`（如 `DQN_LR`, `EPSILON_DECAY`）。
 - 当前 DQN 仅支持 `--scenario base`。
 
+### 2.4 eval_attack 攻击评估输入参数
+
+以下参数只用于 `eval_attack.py`，用于 clean / random_aoi / random_h / random_joint 攻击评估。`eval_attack.py` 不训练模型，不保存 checkpoint、history、图片，只按 `--save-report` 控制是否保存 JSON 报告。
+
+#### 2.4.1 基础评估参数
+
+- `--algo {DQN,DDPG}`：选择被评估的算法。DQN 输出离散 `action_id`，DDPG 输出 `assignment`。
+- `--scenario {base,s10x5,s20x10}`：选择环境规模预设。DQN 当前建议使用 `base`；DDPG 可用于更大规模场景。
+- `--seed <int>`：随机种子。用于构建环境、加载默认 checkpoint 文件名，并作为攻击随机数种子来源。
+- `--device {cpu,cuda}`：模型推理设备。没有 CUDA 时使用 `cpu`。
+- `--model-path <path>`：手动指定 checkpoint 路径。留空时默认使用 `results/checkpoints/{algo}_{scenario}_seed{seed}_best.pt`。
+- `--eval-episodes <int>`：评估 episode 数。数值越大结果越稳定，但耗时越长。
+- `--save-report {0,1}`：是否保存 JSON 报告。`1` 表示保存到 `results/attack_reports/`，`0` 表示只打印终端摘要。
+
+#### 2.4.2 攻击模式参数
+
+- `--attack-mode {clean,random_aoi,random_h,random_joint}`：攻击模式。
+  - `clean`：不攻击，`attack_mean_*` 与 `clean_mean_*` 相同，攻击统计为 0。
+  - `random_aoi`：只扰动 agent 看到的 AoI 段。
+  - `random_h`：只扰动 agent 看到的信道状态 H 段。
+  - `random_joint`：同时扰动 AoI 和 H，但仍受总稀疏预算约束。
+- `--attack-prob <float>`：每个 step 尝试攻击的概率，范围建议 `[0,1]`。例如 `0.2` 表示每步有 20% 概率尝试攻击。
+- `--max-attack-ratio <float>`：episode 内攻击步比例上限，范围建议 `[0,1]`。例如 `0.2` 表示最多攻击约 20% 的 step。
+- `--strict-budget {0,1}`：是否严格执行 `max_attack_ratio`。`1` 表示攻击步数达到预算后停止攻击。
+- `--max-consecutive-steps <int>`：最大连续攻击步数。达到该值后下一次攻击尝试会被跳过，用于限制攻击连续性。
+- `--cooldown-steps <int>`：冷却步数预留参数。当前实现保留该字段，暂不执行复杂冷却逻辑。
+- `--record-perturbation {0,1}`：扰动记录开关预留参数。当前报告始终输出汇总统计字段。
+
+#### 2.4.3 AoI 扰动约束参数
+
+- `--aoi-delta <int>`：AoI 单维最大扰动幅值。扰动后会执行 `round + clip`，保证 AoI 在 `[1, env.max_aoi]`。
+- `--max-aoi-features <int>`：每个 step 最多扰动多少个 AoI 维度。
+- `--aoi-direction {random,increase,decrease,mixed}`：AoI 扰动方向。
+  - `random`：在 `[-aoi_delta, aoi_delta]` 中随机取非零整数。
+  - `increase`：只增大 AoI。
+  - `decrease`：只减小 AoI。
+  - `mixed`：每个被选维度随机增大或减小。
+
+#### 2.4.4 H 扰动约束参数
+
+- `--h-delta <int>`：H 单维最大扰动幅值。扰动后会执行 `round + clip`，保证 H 在 `[0,4]`。
+- `--max-h-features <int>`：每个 step 最多扰动多少个 H 维度。
+- `--h-direction {random,increase,decrease,mixed}`：H 扰动方向，含义与 `--aoi-direction` 相同。
+
+#### 2.4.5 总稀疏约束参数
+
+- `--max-total-features <int>`：每个 step 最多扰动的总维度数。`random_joint` 下必须满足 `aoi_l0 + h_l0 <= max_total_features`。
+- 推荐约束关系：`max_total_features >= max_aoi_features` 且 `max_total_features >= max_h_features`；如果更小，实际扰动维度会被总预算截断。
+
 ## 3. 训练命令模板（严格分开）
 
 ### 3.1 仅 DQN 训练命令
@@ -200,18 +249,57 @@ python eval_attack.py --algo DDPG --scenario base --seed 24 --device cpu --eval-
 ### 6.4 eval_attack 攻击评估报告
 
 - `results/attack_reports/attack_eval_{algo}_{scenario}_seed{seed}_{attack_mode}.json`
-- 关键字段：
-  - `attack_mode`
-  - `checkpoint_path`
-  - `clean_mean_mse`
-  - `attack_mean_mse`
-  - `mse_degradation`
-  - `clean_mean_sum_aoi`
-  - `attack_mean_sum_aoi`
-  - `sum_aoi_degradation`
-  - `attack_step_ratio`
-  - `action_flip_ratio`
-  - `constraint_violation_count`
+- clean 和 attack 都使用同一份报告结构。`attack_mode=clean` 时，`attack_mean_mse == clean_mean_mse`，`attack_mean_sum_aoi == clean_mean_sum_aoi`，攻击统计字段为 0。
+
+#### 6.4.1 实验元信息字段
+
+- `algo`：被评估算法，取值为 `DQN` 或 `DDPG`。
+- `scenario`：环境规模预设，例如 `base`、`s10x5`、`s20x10`。
+- `n`：传感器数量。
+- `m`：信道数量。
+- `seed`：本次评估使用的随机种子。
+- `device`：模型推理设备，例如 `cpu` 或 `cuda`。
+- `eval_episodes`：评估 episode 数。
+- `checkpoint_path`：实际加载的 checkpoint 绝对路径。
+
+#### 6.4.2 攻击配置字段
+
+- `attack_mode`：攻击模式，取值为 `clean`、`random_aoi`、`random_h`、`random_joint`。
+- `attack_prob`：每个 step 尝试攻击的概率。
+- `max_attack_ratio`：每个 episode 内攻击步比例上限。
+- `strict_budget`：是否严格执行攻击步预算。
+- `aoi_delta`：AoI 单维最大扰动幅值。
+- `h_delta`：H 单维最大扰动幅值。
+- `max_aoi_features`：每步最多扰动的 AoI 维度数。
+- `max_h_features`：每步最多扰动的 H 维度数。
+- `max_total_features`：每步最多扰动的总维度数。
+- `aoi_direction`：AoI 扰动方向。
+- `h_direction`：H 扰动方向。
+- `max_consecutive_steps`：最大连续攻击步数。
+
+#### 6.4.3 clean / attack 性能对比字段
+
+- `clean_mean_mse`：clean baseline 下的平均 Sum MSE。由 clean 动作真实推进环境得到。
+- `attack_mean_mse`：攻击评估下的平均 Sum MSE。agent 用 `attacked_state` 选动作，环境仍按真实状态转移。
+- `mse_degradation`：MSE 绝对退化量，计算方式为 `attack_mean_mse - clean_mean_mse`。正数表示攻击后 MSE 变大。
+- `mse_degradation_ratio`：MSE 相对退化比例，计算方式为 `mse_degradation / clean_mean_mse`。
+- `clean_mean_sum_aoi`：clean baseline 下的平均 SumAoI。
+- `attack_mean_sum_aoi`：攻击评估下的平均 SumAoI。
+- `sum_aoi_degradation`：SumAoI 绝对退化量，计算方式为 `attack_mean_sum_aoi - clean_mean_sum_aoi`。
+- `sum_aoi_degradation_ratio`：SumAoI 相对退化比例，计算方式为 `sum_aoi_degradation / clean_mean_sum_aoi`。
+
+#### 6.4.4 攻击行为统计字段
+
+- `attack_step_ratio`：实际发生扰动的 step 比例，计算方式为 `attack_step_count / total_steps`。
+- `action_flip_ratio`：动作翻转比例，计算方式为 `action_flip_count / total_steps`。DQN 比较 `action_id`，DDPG 比较 `assignment tuple`。
+- `avg_aoi_l0_per_step`：每个 step 平均被扰动的 AoI 维度数。
+- `avg_h_l0_per_step`：每个 step 平均被扰动的 H 维度数。
+- `avg_total_l0_per_step`：每个 step 平均被扰动的总维度数。
+- `avg_aoi_l1_per_attack`：每个实际攻击步的 AoI 扰动 L1 平均强度。
+- `avg_h_l1_per_attack`：每个实际攻击步的 H 扰动 L1 平均强度。
+- `max_aoi_linf`：整个评估过程中 AoI 单维最大实际扰动幅值，应不超过 `aoi_delta`。
+- `max_h_linf`：整个评估过程中 H 单维最大实际扰动幅值，应不超过 `h_delta`。
+- `constraint_violation_count`：约束违规次数。正常情况下应为 `0`；若大于 `0`，终端会打印 warning。
 
 ### 6.5 history 与跨算法对比（`--save-history 1`）
 

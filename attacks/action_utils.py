@@ -48,10 +48,8 @@ def select_ddpg_assignment(state: np.ndarray, agent, env) -> tuple[int, ...]:
         2. 调用 agent.select_action，固定 noise_std=0.0。
         3. 使用 map_continuous_to_assignment 转为离散 assignment。
     """
-    # DDPG 与训练评估逻辑保持一致：先归一化状态，再走确定性 actor。
-    state_for_agent = _normalize_state_for_ddpg(np.asarray(state, dtype=np.float32).reshape(-1), env)
     # 评估阶段不加入动作噪声。
-    virtual_action = agent.select_action(state_for_agent, noise_std=0.0)
+    virtual_action = agent.select_action(state, noise_std=0.0)
     # 连续动作映射为 assignment，作为 DDPG 后续 env.step_assignment 的输入。
     assignment = map_continuous_to_assignment(virtual_action, n=int(env.n), m=int(env.m))
     return tuple(int(x) for x in assignment)
