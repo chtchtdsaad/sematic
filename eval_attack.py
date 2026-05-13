@@ -22,6 +22,12 @@ from attacks.action_utils import select_action_for_eval
 from attacks.attack_config import AttackConfig, build_attack_config_from_args
 from attacks.metrics import init_attack_stats, summarize_attack_stats, update_action_flip_stats, update_perturbation_stats
 from attacks.random_semantic import semantic_random_attack
+from attacks.structural_expected import (
+    semantic_aoi_expected_cost_attack,
+    semantic_h_expected_cost_attack,
+    semantic_joint_expected_cost_attack,
+)
+from attacks.structural_metrics import compute_structural_action_metrics, update_structural_metric_stats
 from attacks.structural_semantic import (
     semantic_aoi_mislead_attack,
     semantic_h_mislead_attack,
@@ -65,13 +71,16 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="clean",
         choices=[
-            "clean",                   # 不攻击，只输出 clean 等价报告。
-            "random_aoi",              # 随机扰动 AoI 观测段。
-            "random_h",                # 随机扰动 H 观测段。
-            "random_joint",            # 随机同时扰动 AoI 和 H 观测段。
-            "semantic_aoi_mislead",    # 结构化 AoI-only 误导攻击。
-            "semantic_h_mislead",      # 结构化 H-only 误导攻击。
-            "semantic_joint_mislead",  # 结构化 AoI+H 联合误导攻击。
+            "clean",
+            "random_aoi",
+            "random_h",
+            "random_joint",
+            "semantic_aoi_mislead",
+            "semantic_h_mislead",
+            "semantic_joint_mislead",
+            "semantic_aoi_expected_cost",
+            "semantic_h_expected_cost",
+            "semantic_joint_expected_cost",
         ],
     )
     parser.add_argument("--attack-prob", type=float, default=0.2)
@@ -96,6 +105,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cooldown-steps", type=int, default=0)
     parser.add_argument("--record-perturbation", type=int, default=1, choices=[0, 1])
     parser.add_argument("--save-report", type=int, default=1, choices=[0, 1])
+    parser.add_argument("--expected-cost-mode", type=str, default="mse", choices=["mse", "sum_aoi"])
 
     # 为兼容 workflow.build_agent 的参数需求提供占位值。
     parser.add_argument("--episodes", type=int, default=1)
@@ -152,65 +162,84 @@ def _step_env_with_action(algo: str, env, action):
     return env.step_assignment(action)
 
 
-def generate_attacked_state(state, env, config: AttackConfig, rng: np.random.Generator, attack_state: dict):
+def generate_attacked_state(
+    state,
+    env,
+    config: AttackConfig,
+    rng: np.random.Generator,
+    attack_state: dict,
+    algo: str | None = None,
+    agent=None,
+):
     """
     作用:
-        根据 attack mode 分发到 random 或结构化 mislead 攻击实现。
-
+        根据 attack mode 分发到 random、mislead 或 expected-cost 攻击实现。
     输入格式:
-        state: np.ndarray[float32], shape=(N + N*M,)。
-        env: 环境实例。
-        config: AttackConfig，包含 mode 和预算参数。
+        state: np.ndarray[float32], shape=(N+N*M,)。
+        env: 环境实例，只读传入攻击函数。
+        config: AttackConfig，攻击预算和模式配置。
         rng: np.random.Generator，攻击随机数发生器。
         attack_state: dict，episode 内攻击预算状态。
-
+        algo: str | None，expected-cost 攻击需要 DQN/DDPG 算法名。
+        agent: victim agent，expected-cost 攻击需要用它给候选状态选动作。
     输出格式:
-        tuple[np.ndarray, dict]，attacked_state 与扰动统计。
-
+        tuple[np.ndarray, dict]，attacked_state 和扰动统计。
     核心步骤:
-        1. clean/random_* 继续复用 semantic_random_attack。
-        2. semantic_*_mislead 分发到结构化攻击函数。
-        3. 未知 mode 立即报错。
+        1. clean/random 复用 semantic_random_attack。
+        2. mislead 分发到 structural_semantic。
+        3. expected-cost 分发到 structural_expected，并额外传入 algo/agent。
     """
-    # 从 AttackConfig 中读取攻击模式，所有分发都以 config.mode 为准。
+    # 从 AttackConfig 读取模式，所有攻击分发都以 config.mode 为准。
     mode = str(config.mode)
-    # clean/random 系列沿用原有 semantic_random_attack，保证旧行为不变。
+    # clean/random 系列保持旧逻辑，避免影响已有 baseline。
     if mode in {"clean", "random_aoi", "random_h", "random_joint"}:
-        return semantic_random_attack(
-            state=state,                 # 当前真实 state 副本输入。
-            env=env,                     # 环境只读使用，不允许攻击函数写回。
-            config=config,               # 攻击预算、幅值和模式配置。
-            rng=rng,                     # 攻击侧随机数发生器。
-            attack_state=attack_state,   # episode 内攻击步预算状态。
-        )
-    # AoI-only 结构化攻击：只改 agent 看到的 AoI 观测。
+        return semantic_random_attack(state=state, env=env, config=config, rng=rng, attack_state=attack_state)
+    # AoI-only 结构化误导攻击。
     if mode == "semantic_aoi_mislead":
-        return semantic_aoi_mislead_attack(
-            state=state,                 # 当前真实 state 副本输入。
-            env=env,                     # 环境只读使用。
-            config=config,               # 攻击预算和 AoI delta 配置。
-            rng=rng,                     # 攻击触发概率使用的随机数发生器。
-            attack_state=attack_state,   # episode 内攻击步预算状态。
-        )
-    # H-only 结构化攻击：只改 agent 看到的 H 观测。
+        return semantic_aoi_mislead_attack(state=state, env=env, config=config, rng=rng, attack_state=attack_state)
+    # H-only 结构化误导攻击。
     if mode == "semantic_h_mislead":
-        return semantic_h_mislead_attack(
-            state=state,                 # 当前真实 state 副本输入。
-            env=env,                     # 环境只读使用。
-            config=config,               # 攻击预算和 H delta 配置。
-            rng=rng,                     # 攻击触发概率使用的随机数发生器。
-            attack_state=attack_state,   # episode 内攻击步预算状态。
-        )
-    # Joint 结构化攻击：同时改 agent 看到的 AoI 和 H 观测。
+        return semantic_h_mislead_attack(state=state, env=env, config=config, rng=rng, attack_state=attack_state)
+    # Joint 结构化误导攻击。
     if mode == "semantic_joint_mislead":
-        return semantic_joint_mislead_attack(
-            state=state,                 # 当前真实 state 副本输入。
-            env=env,                     # 环境只读使用。
-            config=config,               # 攻击预算、AoI delta 和 H delta 配置。
-            rng=rng,                     # 攻击触发概率使用的随机数发生器。
-            attack_state=attack_state,   # episode 内攻击步预算状态。
+        return semantic_joint_mislead_attack(state=state, env=env, config=config, rng=rng, attack_state=attack_state)
+    # expected-cost 攻击必须传入 algo 和 agent，否则无法对候选状态调用 victim policy。
+    if algo is None or agent is None:
+        raise ValueError("expected-cost attack requires algo and agent.")
+    # AoI-only expected-cost 攻击。
+    if mode == "semantic_aoi_expected_cost":
+        return semantic_aoi_expected_cost_attack(
+            state=state,
+            env=env,
+            config=config,
+            rng=rng,
+            attack_state=attack_state,
+            algo=algo,
+            agent=agent,
         )
-    # 所有合法模式都应该在上面返回；走到这里说明 CLI 或配置传入了未知模式。
+    # H-only expected-cost 攻击。
+    if mode == "semantic_h_expected_cost":
+        return semantic_h_expected_cost_attack(
+            state=state,
+            env=env,
+            config=config,
+            rng=rng,
+            attack_state=attack_state,
+            algo=algo,
+            agent=agent,
+        )
+    # Joint expected-cost 攻击。
+    if mode == "semantic_joint_expected_cost":
+        return semantic_joint_expected_cost_attack(
+            state=state,
+            env=env,
+            config=config,
+            rng=rng,
+            attack_state=attack_state,
+            algo=algo,
+            agent=agent,
+        )
+    # 未知攻击模式直接报错。
     raise ValueError(f"unsupported attack mode: {mode}")
 
 
@@ -357,6 +386,7 @@ def run_attack_eval(
             "attack_steps_used": 0,
             "max_attack_steps": int(np.floor(int(episode_length) * float(attack_config.max_attack_ratio))),
             "consecutive_attack_steps": 0,
+            "cooldown_remaining": 0,
         }
 
         # 内层 step 循环。
@@ -371,6 +401,8 @@ def run_attack_eval(
                 config=attack_config,
                 rng=rng,
                 attack_state=attack_state,
+                algo=algo,
+                agent=agent,
             )
 
             # attacked_action 用于真实环境执行。
@@ -379,6 +411,9 @@ def run_attack_eval(
             # 更新扰动统计与动作翻转统计。
             update_perturbation_stats(stats, perturb_info, attack_config)
             update_action_flip_stats(stats, clean_action, attacked_action)
+            # 结构性资源错配指标使用真实 state、clean_action 和 attacked_action 计算。
+            structural_metrics = compute_structural_action_metrics(state, env, algo, clean_action, attacked_action)
+            update_structural_metric_stats(stats, structural_metrics)
 
             # 真实环境只接收 attacked_action，不能接收 attacked_state。
             next_state, reward, done = _step_env_with_action(algo, env, attacked_action)
@@ -563,6 +598,7 @@ def save_attack_report(
         "aoi_direction": str(attack_config.aoi_direction),
         "h_direction": str(attack_config.h_direction),
         "max_consecutive_steps": int(attack_config.max_consecutive_steps),
+        "expected_cost_mode": str(getattr(attack_config, "expected_cost_mode", "mse")),
         "clean_mean_mse": clean_mean_mse,
         "attack_mean_mse": attack_mean_mse,
         "mse_degradation": mse_degradation,
@@ -581,6 +617,15 @@ def save_attack_report(
         "max_aoi_linf": float(attack_result.get("max_aoi_linf", 0.0)),
         "max_h_linf": float(attack_result.get("max_h_linf", 0.0)),
         "constraint_violation_count": int(attack_result.get("constraint_violation_count", 0)),
+        "clean_selected_risk_sum": float(attack_result.get("clean_selected_risk_sum", 0.0)),
+        "attack_selected_risk_sum": float(attack_result.get("attack_selected_risk_sum", 0.0)),
+        "resource_misallocation_score": float(attack_result.get("resource_misallocation_score", 0.0)),
+        "high_risk_scheduled_ratio_clean": float(attack_result.get("high_risk_scheduled_ratio_clean", 0.0)),
+        "high_risk_scheduled_ratio_attack": float(attack_result.get("high_risk_scheduled_ratio_attack", 0.0)),
+        "low_risk_scheduled_ratio_clean": float(attack_result.get("low_risk_scheduled_ratio_clean", 0.0)),
+        "low_risk_scheduled_ratio_attack": float(attack_result.get("low_risk_scheduled_ratio_attack", 0.0)),
+        "high_risk_good_channel_ratio_clean": float(attack_result.get("high_risk_good_channel_ratio_clean", 0.0)),
+        "high_risk_good_channel_ratio_attack": float(attack_result.get("high_risk_good_channel_ratio_attack", 0.0)),
     }
 
     # 统一浮点位数后写入 UTF-8 JSON。

@@ -36,6 +36,15 @@ def init_attack_stats() -> dict[str, int | float]:
         "max_aoi_linf": 0.0,
         "max_h_linf": 0.0,
         "constraint_violation_count": 0,
+        "total_clean_selected_risk_sum": 0.0,
+        "total_attack_selected_risk_sum": 0.0,
+        "total_resource_misallocation_score": 0.0,
+        "total_high_risk_scheduled_ratio_clean": 0.0,
+        "total_high_risk_scheduled_ratio_attack": 0.0,
+        "total_low_risk_scheduled_ratio_clean": 0.0,
+        "total_low_risk_scheduled_ratio_attack": 0.0,
+        "total_high_risk_good_channel_ratio_clean": 0.0,
+        "total_high_risk_good_channel_ratio_attack": 0.0,
     }
 
 
@@ -226,4 +235,13 @@ def summarize_attack_stats(stats: dict) -> dict[str, float | int]:
         "max_aoi_linf": float(stats.get("max_aoi_linf", 0.0)),
         "max_h_linf": float(stats.get("max_h_linf", 0.0)),
         "constraint_violation_count": int(stats.get("constraint_violation_count", 0)),
+        "clean_selected_risk_sum": float(stats.get("total_clean_selected_risk_sum", 0.0)) / float(total_steps),
+        "attack_selected_risk_sum": float(stats.get("total_attack_selected_risk_sum", 0.0)) / float(total_steps),
+        "resource_misallocation_score": float(stats.get("total_resource_misallocation_score", 0.0)) / float(total_steps),
+        "high_risk_scheduled_ratio_clean": float(stats.get("total_high_risk_scheduled_ratio_clean", 0.0)) / float(total_steps),
+        "high_risk_scheduled_ratio_attack": float(stats.get("total_high_risk_scheduled_ratio_attack", 0.0)) / float(total_steps),
+        "low_risk_scheduled_ratio_clean": float(stats.get("total_low_risk_scheduled_ratio_clean", 0.0)) / float(total_steps),
+        "low_risk_scheduled_ratio_attack": float(stats.get("total_low_risk_scheduled_ratio_attack", 0.0)) / float(total_steps),
+        "high_risk_good_channel_ratio_clean": float(stats.get("total_high_risk_good_channel_ratio_clean", 0.0)) / float(total_steps),
+        "high_risk_good_channel_ratio_attack": float(stats.get("total_high_risk_good_channel_ratio_attack", 0.0)) / float(total_steps),
     }

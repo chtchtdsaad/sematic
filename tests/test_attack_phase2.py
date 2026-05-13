@@ -1,3 +1,9 @@
+"""
+攻击阶段二配置与随机攻击测试文件（test_attack_phase2.py）
+========================================================
+本文件验证 AttackConfig 字段、CLI 参数转配置逻辑和随机攻击阶段二约束。
+"""
+
 from __future__ import annotations
 
 from argparse import Namespace
@@ -51,6 +57,7 @@ def test_attack_config_keeps_phase2_fields() -> None:
         "aoi_direction": "increase",
         "h_direction": "random",
         "record_perturbation": True,
+        "expected_cost_mode": "mse",
     }
 
 

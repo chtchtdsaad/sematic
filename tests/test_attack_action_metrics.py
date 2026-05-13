@@ -1,3 +1,9 @@
+"""
+攻击动作选择与基础统计测试文件（test_attack_action_metrics.py）
+==============================================================
+本文件验证 DQN/DDPG eval 动作选择、扰动统计汇总和本轮新增结构指标默认输出。
+"""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -149,4 +155,13 @@ def test_summarize_attack_stats_returns_ratios_and_averages() -> None:
         "max_aoi_linf": 3.0,
         "max_h_linf": 2.0,
         "constraint_violation_count": 1,
+        "clean_selected_risk_sum": 0.0,
+        "attack_selected_risk_sum": 0.0,
+        "resource_misallocation_score": 0.0,
+        "high_risk_scheduled_ratio_clean": 0.0,
+        "high_risk_scheduled_ratio_attack": 0.0,
+        "low_risk_scheduled_ratio_clean": 0.0,
+        "low_risk_scheduled_ratio_attack": 0.0,
+        "high_risk_good_channel_ratio_clean": 0.0,
+        "high_risk_good_channel_ratio_attack": 0.0,
     }

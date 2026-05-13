@@ -229,7 +229,7 @@ def random_bias_h(h_part, config, rng, max_features_override=None):
 def _can_attack(config, rng: np.random.Generator, attack_state: dict) -> bool:
     """
     作用:
-        根据概率、episode 预算和连续攻击限制判断本步是否允许攻击。
+        根据概率、episode 预算、连续攻击限制和 cooldown 判断本步是否允许攻击。
     输入格式:
         config: AttackConfig 或等价配置对象。
         rng: np.random.Generator。
@@ -237,25 +237,46 @@ def _can_attack(config, rng: np.random.Generator, attack_state: dict) -> bool:
     输出格式:
         bool，True 表示本步可以尝试攻击。
     核心步骤:
-        1. 按 attack_prob 抽样判断是否触发。
-        2. strict_budget 为 True 时检查 max_attack_steps。
-        3. 检查 max_consecutive_steps，触顶时重置连续计数并跳过本步。
+        1. 若仍处于 cooldown，则消耗一个冷却步并跳过攻击。
+        2. 按 attack_prob 抽样判断是否触发。
+        3. strict_budget 为 True 时检查 max_attack_steps。
+        4. 检查 max_consecutive_steps，触顶时进入 cooldown 并跳过本步。
     """
+    # cooldown_remaining 表示还需要强制跳过多少个 step；跳过时不消耗随机数。
+    cooldown_remaining = int(attack_state.get("cooldown_remaining", 0))
+    if cooldown_remaining > 0:
+        # 当前 step 被 cooldown 占用，因此先递减剩余冷却步数。
+        attack_state["cooldown_remaining"] = max(0, cooldown_remaining - 1)
+        # cooldown 期间连续攻击计数保持为 0。
+        attack_state["consecutive_attack_steps"] = 0
+        return False
+
+    # 按概率判断本步是否尝试攻击。
     attack_prob = float(_get_config_value(config, "attack_prob", 0.0))
     if rng.random() >= attack_prob:
+        # 概率未命中时，连续攻击链条自然断开。
         attack_state["consecutive_attack_steps"] = 0
         return False
 
+    # strict_budget 打开时，episode 内攻击步数不能超过 max_attack_steps。
     strict_budget = bool(_get_config_value(config, "strict_budget", True))
     if strict_budget and int(attack_state.get("attack_steps_used", 0)) >= int(attack_state.get("max_attack_steps", 0)):
+        # 总预算耗尽时同样打断连续攻击链条。
         attack_state["consecutive_attack_steps"] = 0
         return False
 
+    # 读取连续攻击上限；小于 1 时视为不允许连续攻击，至少保留 1 的有效上限。
     max_consecutive_steps = int(_get_config_value(config, "max_consecutive_steps", 5))
+    max_consecutive_steps = max(1, max_consecutive_steps)
     if int(attack_state.get("consecutive_attack_steps", 0)) >= max_consecutive_steps:
+        # 达到连续攻击上限后，本 step 必须跳过，并按配置进入后续 cooldown。
         attack_state["consecutive_attack_steps"] = 0
+        # cooldown_steps 包含当前被强制跳过的 step；因此后续剩余冷却步数为 cooldown_steps-1。
+        cooldown_steps = max(0, int(_get_config_value(config, "cooldown_steps", 0)))
+        attack_state["cooldown_remaining"] = max(0, cooldown_steps - 1)
         return False
 
+    # 所有约束均通过，本步允许攻击。
     return True
 
 

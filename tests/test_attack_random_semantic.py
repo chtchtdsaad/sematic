@@ -1,3 +1,9 @@
+"""
+随机语义攻击测试文件（test_attack_random_semantic.py）
+====================================================
+本文件验证 clean/random AoI/H/Joint 攻击的约束、预算、cooldown 和环境不写回行为。
+"""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -38,6 +44,7 @@ def make_attack_state(**overrides):
         "attack_steps_used": 0,
         "max_attack_steps": 10,
         "consecutive_attack_steps": 0,
+        "cooldown_remaining": 0,
     }
     state.update(overrides)
     return state
@@ -168,3 +175,29 @@ def test_semantic_random_attack_obeys_strict_budget_and_consecutive_limit() -> N
     np.testing.assert_array_equal(attacked_state, state)
     assert info["is_attacked"] is False
     assert consecutive_state["consecutive_attack_steps"] == 0
+
+
+def test_semantic_random_attack_honors_cooldown_after_consecutive_limit() -> None:
+    from attacks.random_semantic import semantic_random_attack
+
+    env = DummyEnv()
+    state = np.array([2, 3, 4, 1, 2, 3, 4, 1, 2], dtype=np.float32)
+    rng = np.random.default_rng(31)
+    config = make_config(mode="random_aoi", attack_prob=1.0, max_consecutive_steps=2, cooldown_steps=2)
+    attack_state = make_attack_state(consecutive_attack_steps=2)
+
+    first_state, first_info = semantic_random_attack(state, env, config, rng, attack_state)
+    np.testing.assert_array_equal(first_state, state)
+    assert first_info["is_attacked"] is False
+    assert attack_state["consecutive_attack_steps"] == 0
+    assert attack_state["cooldown_remaining"] == 1
+
+    second_state, second_info = semantic_random_attack(state, env, config, rng, attack_state)
+    np.testing.assert_array_equal(second_state, state)
+    assert second_info["is_attacked"] is False
+    assert attack_state["cooldown_remaining"] == 0
+
+    third_state, third_info = semantic_random_attack(state, env, config, rng, attack_state)
+    assert third_info["is_attacked"] is True
+    assert attack_state["consecutive_attack_steps"] == 1
+    assert not np.array_equal(third_state, state)

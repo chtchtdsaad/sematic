@@ -40,16 +40,18 @@ def select_ddpg_assignment(state: np.ndarray, agent, env) -> tuple[int, ...]:
     输入格式:
         state: np.ndarray[float32], shape=(state_dim,)
         agent: DDPGAgent，需提供 select_action(state, noise_std)
-        env: 环境实例，需包含 n / m 以及归一化所需字段
+        env: 环境实例，需包含 n / m。
     输出格式:
         tuple[int, ...]，长度为 env.n，取值范围为 0..env.m。
     核心步骤:
-        1. 使用 train._normalize_state_for_ddpg 逻辑归一化 state。
-        2. 调用 agent.select_action，固定 noise_std=0.0。
+        1. 直接使用原始 state 调用 agent.select_action。
+        2. 固定 noise_std=0.0。
         3. 使用 map_continuous_to_assignment 转为离散 assignment。
     """
+    # DDPG 不做额外 normalize，直接使用 eval_attack 传入的原始 state。
+    state_for_agent = np.asarray(state, dtype=np.float32).reshape(-1)
     # 评估阶段不加入动作噪声。
-    virtual_action = agent.select_action(state, noise_std=0.0)
+    virtual_action = agent.select_action(state_for_agent, noise_std=0.0)
     # 连续动作映射为 assignment，作为 DDPG 后续 env.step_assignment 的输入。
     assignment = map_continuous_to_assignment(virtual_action, n=int(env.n), m=int(env.m))
     return tuple(int(x) for x in assignment)

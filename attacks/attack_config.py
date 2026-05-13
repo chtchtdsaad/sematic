@@ -31,6 +31,7 @@ class AttackConfig:
         aoi_direction: str，AoI 扰动方向。
         h_direction: str，H 扰动方向。
         record_perturbation: bool，是否记录扰动统计。
+        expected_cost_mode: str，expected-cost 攻击使用的代价模式，支持 mse / sum_aoi。
 
     输出格式:
         AttackConfig 实例。
@@ -61,6 +62,7 @@ class AttackConfig:
     h_direction: str = "random"
 
     record_perturbation: bool = True
+    expected_cost_mode: str = "mse"
 
 
 def build_attack_config_from_args(args) -> AttackConfig:
@@ -103,4 +105,5 @@ def build_attack_config_from_args(args) -> AttackConfig:
         aoi_direction=str(getattr(args, "aoi_direction", "random")),
         h_direction=str(getattr(args, "h_direction", "random")),
         record_perturbation=record_perturbation,
+        expected_cost_mode=str(getattr(args, "expected_cost_mode", "mse")),
     )
