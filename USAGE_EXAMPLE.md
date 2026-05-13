@@ -219,7 +219,53 @@ python eval_attack.py --algo DQN --scenario base --seed 24 --device cpu --eval-e
 python eval_attack.py --algo DDPG --scenario base --seed 24 --device cpu --eval-episodes 10 --attack-mode random_joint --attack-prob 0.2 --max-attack-ratio 0.2 --aoi-delta 1 --h-delta 1 --max-aoi-features 1 --max-h-features 2 --max-total-features 3 --aoi-direction random --h-direction random --strict-budget 1
 ```
 
-### 5.5 DQN：结构化 expected-cost 攻击
+### 5.5 DQN：结构化感知 mislead 攻击
+
+AoI-only mislead：
+
+```bash
+python eval_attack.py --algo DQN --scenario base --seed 24 --device cpu --eval-episodes 10 --attack-mode semantic_aoi_mislead --attack-prob 0.2 --max-attack-ratio 0.2 --aoi-delta 5 --max-aoi-features 2 --max-total-features 2 --strict-budget 1
+```
+
+H-only mislead：
+
+```bash
+python eval_attack.py --algo DQN --scenario base --seed 24 --device cpu --eval-episodes 10 --attack-mode semantic_h_mislead --attack-prob 0.2 --max-attack-ratio 0.2 --h-delta 4 --max-h-features 4 --max-total-features 4 --strict-budget 1
+```
+
+Joint mislead：
+
+```bash
+python eval_attack.py --algo DQN --scenario base --seed 24 --device cpu --eval-episodes 10 --attack-mode semantic_joint_mislead --attack-prob 0.2 --max-attack-ratio 0.2 --aoi-delta 5 --h-delta 4 --max-aoi-features 2 --max-h-features 4 --max-total-features 6 --strict-budget 1
+```
+
+### 5.6 DDPG：结构化感知 mislead 攻击
+
+AoI-only mislead：
+
+```bash
+python eval_attack.py --algo DDPG --scenario base --seed 24 --device cpu --eval-episodes 10 --attack-mode semantic_aoi_mislead --attack-prob 0.2 --max-attack-ratio 0.2 --aoi-delta 5 --max-aoi-features 2 --max-total-features 2 --strict-budget 1
+```
+
+H-only mislead：
+
+```bash
+python eval_attack.py --algo DDPG --scenario base --seed 24 --device cpu --eval-episodes 10 --attack-mode semantic_h_mislead --attack-prob 0.2 --max-attack-ratio 0.2 --h-delta 4 --max-h-features 4 --max-total-features 4 --strict-budget 1
+```
+
+Joint mislead：
+
+```bash
+python eval_attack.py --algo DDPG --scenario base --seed 24 --device cpu --eval-episodes 10 --attack-mode semantic_joint_mislead --attack-prob 0.2 --max-attack-ratio 0.2 --aoi-delta 5 --h-delta 4 --max-aoi-features 2 --max-h-features 4 --max-total-features 6 --strict-budget 1
+```
+
+### 5.7 结构化感知 mislead 的含义
+
+- `semantic_aoi_mislead`：降低高风险 sensor 的观测 AoI，抬高低风险 sensor 的观测 AoI，诱导策略低估真正紧急的 sensor。
+- `semantic_h_mislead`：降低高 priority 链路的观测 H，抬高低风险诱饵链路的观测 H。H 越大表示丢包率越低，因此降低 H 表示把关键链路伪装得更差。
+- `semantic_joint_mislead`：同时执行 AoI 与 H 的结构化误导，并受 `--max-total-features` 总 L0 预算约束。
+
+### 5.8 DQN：结构化 expected-cost 攻击
 
 AoI-only expected-cost：
 
@@ -239,7 +285,7 @@ Joint expected-cost：
 python eval_attack.py --algo DQN --scenario base --seed 24 --device cpu --eval-episodes 10 --attack-mode semantic_joint_expected_cost --attack-prob 0.2 --max-attack-ratio 0.2 --aoi-delta 5 --h-delta 4 --max-aoi-features 2 --max-h-features 4 --max-total-features 6 --strict-budget 1 --expected-cost-mode mse
 ```
 
-### 5.6 DDPG：结构化 expected-cost 攻击
+### 5.9 DDPG：结构化 expected-cost 攻击
 
 AoI-only expected-cost：
 
@@ -259,7 +305,7 @@ Joint expected-cost：
 python eval_attack.py --algo DDPG --scenario base --seed 24 --device cpu --eval-episodes 10 --attack-mode semantic_joint_expected_cost --attack-prob 0.2 --max-attack-ratio 0.2 --aoi-delta 5 --h-delta 4 --max-aoi-features 2 --max-h-features 4 --max-total-features 6 --strict-budget 1 --expected-cost-mode mse
 ```
 
-### 5.7 expected-cost 目标切换
+### 5.10 expected-cost 目标切换
 
 默认 `--expected-cost-mode mse`，表示攻击者枚举候选扰动后，选择让 victim action 的下一步期望 MSE 最大的候选。  
 如果希望用 AoI 作为更轻量的代理目标，可以改为：
