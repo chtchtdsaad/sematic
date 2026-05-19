@@ -14,8 +14,9 @@ import argparse
 import json
 from pathlib import Path
 
+from attacks.learned_attack_config import build_learned_attack_config_from_args
 from config import DEFAULT_SEED, EPISODE_LENGTH, NUM_EPISODES, SCENARIO_PRESETS
-from train import load_checkpoint, run_evaluation, run_training
+from train import load_checkpoint, run_attacker_training, run_evaluation, run_training
 from utils import (
     compute_dynamic_ylim_from_tail_mean,
     plot_learning_curve,
@@ -25,8 +26,12 @@ from utils import (
 )
 from workflow import (
     build_agent,
+    build_attack_agent,
+    build_attacker_train_config,
     build_env,
+    build_learned_attack_env,
     build_train_config,
+    build_victim_for_attack,
     resolve_device,
     save_history_and_compare,
     set_global_seed,
@@ -49,8 +54,22 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Baseline DQN/DDPG training CLI")
 
     # ---------- 基础参数 ----------
+    # 任务类型：victim 保留原训练/评估，attacker 启动 learned attacker 训练。
+    parser.add_argument(
+        "--task",
+        type=str,
+        default="victim",
+        choices=["victim", "attacker"],
+        help="Run victim scheduler training/eval or learned attacker training.",
+    )
     # 算法类型，离散动作 DQN 或连续动作映射 DDPG。
-    parser.add_argument("--algo", type=str, required=True, choices=["DQN", "DDPG"], help="Training algorithm.")
+    parser.add_argument(
+        "--algo",
+        type=str,
+        default=None,
+        choices=["DQN", "DDPG"],
+        help="Training algorithm. Required when --task victim.",
+    )
     # 随机种子，输入为 int，影响环境和模型初始化。
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Random seed.")
     # 训练轮次，输入为 int。
@@ -127,6 +146,70 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--best-eval-every", type=int, default=10, help="Run clean-eval every K episodes.")
     # 每次 clean-eval 跑多少个 episode。
     parser.add_argument("--best-eval-episodes", type=int, default=3, help="Episodes per clean-eval.")
+
+    # ---------- Learned attacker 参数 ----------
+    # 被攻击 victim 算法。
+    parser.add_argument("--victim-algo", type=str, default="DDPG", choices=["DQN", "DDPG"], help="Victim scheduler algo.")
+    # 被攻击 victim checkpoint；为空时按默认 best checkpoint 规则加载。
+    parser.add_argument("--victim-model-path", type=str, default="", help="Victim checkpoint path for learned attacker.")
+    # 攻击者算法，第一轮只支持 DDPG。
+    parser.add_argument("--attacker-algo", type=str, default="DDPG", choices=["DDPG"], help="Learned attacker algo.")
+    # attacker 训练 episode 数。
+    parser.add_argument("--attacker-episodes", type=int, default=300, help="Learned attacker training episodes.")
+    # attacker 单个 episode 长度，默认 500；smoke test 可调小。
+    parser.add_argument("--attacker-episode-length", type=int, default=EPISODE_LENGTH, help="Learned attacker episode length.")
+    # attacker 折扣因子。
+    parser.add_argument("--attacker-gamma", type=float, default=0.95, help="Learned attacker discount factor.")
+    # attacker Actor 学习率。
+    parser.add_argument("--attacker-actor-lr", type=float, default=1e-4, help="Learned attacker actor lr.")
+    # attacker Critic 学习率。
+    parser.add_argument("--attacker-critic-lr", type=float, default=1e-3, help="Learned attacker critic lr.")
+    # attacker target 网络软更新系数。
+    parser.add_argument("--attacker-tau", type=float, default=0.005, help="Learned attacker target soft-update tau.")
+    # attacker warmup 步数。
+    parser.add_argument("--attacker-warmup-steps", type=int, default=2000, help="Learned attacker random warmup steps.")
+    # attacker batch size。
+    parser.add_argument("--attacker-batch-size", type=int, default=128, help="Learned attacker batch size.")
+    # attacker ReplayBuffer 容量。
+    parser.add_argument("--attacker-buffer-capacity", type=int, default=20000, help="Learned attacker replay buffer capacity.")
+    # attacker 更新间隔。
+    parser.add_argument("--attacker-update-interval", type=int, default=1, help="Learned attacker update interval.")
+    # attacker 探索噪声初始值。
+    parser.add_argument("--attacker-noise-std-start", type=float, default=0.25, help="Learned attacker noise std start.")
+    # attacker 探索噪声衰减。
+    parser.add_argument("--attacker-noise-std-decay", type=float, default=0.995, help="Learned attacker noise std decay.")
+    # attacker 探索噪声下限。
+    parser.add_argument("--attacker-noise-std-min", type=float, default=0.03, help="Learned attacker noise std min.")
+    # attacker 梯度裁剪阈值。
+    parser.add_argument("--attacker-grad-clip-norm", type=float, default=5.0, help="Learned attacker grad clip norm.")
+    # attacker deterministic eval 间隔；0 表示关闭。
+    parser.add_argument("--attacker-eval-every", type=int, default=0, help="Run deterministic attacker eval every K episodes; 0 disables it.")
+    # attacker 每次 deterministic eval 的 episode 数。
+    parser.add_argument("--attacker-eval-episodes", type=int, default=1, help="Episodes per deterministic attacker eval.")
+    # 是否同时运行 random intent baseline。
+    parser.add_argument("--attacker-random-baseline", type=int, default=1, choices=[0, 1], help="Run random intent baseline when attacker eval is enabled.")
+    # attacker reward 裁剪上限。
+    parser.add_argument("--attacker-reward-clip", type=float, default=5000.0, help="Learned attacker reward clip.")
+    # 单步能量预算。
+    parser.add_argument("--per-step-energy-budget", type=float, default=2.0, help="Per-step attack energy budget.")
+    # AoI 扰动能量系数。
+    parser.add_argument("--alpha-tau", type=float, default=1.0, help="AoI perturbation energy coefficient.")
+    # H 扰动能量系数。
+    parser.add_argument("--alpha-h", type=float, default=0.25, help="H perturbation energy coefficient.")
+    # AoI 单维扰动幅度。
+    parser.add_argument("--aoi-delta", type=int, default=1, help="Max per-dimension AoI perturbation.")
+    # H 单维扰动幅度。
+    parser.add_argument("--h-delta", type=int, default=1, help="Max per-dimension H perturbation.")
+    # 是否保存 attacker checkpoint。
+    parser.add_argument("--save-attacker-checkpoints", type=int, default=1, choices=[0, 1], help="Save attacker checkpoints.")
+    # 是否保存 attacker history。
+    parser.add_argument("--save-attacker-history", type=int, default=1, choices=[0, 1], help="Save attacker history.")
+    # 是否保存 attacker report。
+    parser.add_argument("--save-attacker-report", type=int, default=1, choices=[0, 1], help="Save attacker report.")
+    # attacker 输出目录。
+    parser.add_argument("--attacker-result-dir", type=str, default="results/attacker", help="Attacker output root dir.")
+    # attacker 日志间隔。
+    parser.add_argument("--attacker-verbose-interval", type=int, default=1, help="Attacker training log interval.")
 
     # 输出 argparse.Namespace，供主流程读取。
     return parser.parse_args()
@@ -323,6 +406,35 @@ def main() -> None:
     set_global_seed(args.seed)
     # 解析并校验设备参数。
     device = resolve_device(args.device)
+
+    # learned attacker 任务走独立分支，避免要求用户提供 --algo。
+    if args.task == "attacker":
+        # 构建 learned attacker 配置。
+        learned_cfg = build_learned_attack_config_from_args(args)
+        # 启动日志明确区分 victim 和 attacker。
+        print(
+            f"Run -> Task: attacker, Victim: {learned_cfg.victim_algo}, Scenario: {args.scenario}, "
+            f"Seed: {args.seed}, AttackerEpisodes: {learned_cfg.attacker_episodes}, Device: {device}"
+        )
+        # 构建并加载固定 victim。
+        base_env, victim_agent, victim_algo, victim_meta = build_victim_for_attack(args=args, device=device)
+        # 构建 learned attacker 环境包装器。
+        attack_env = build_learned_attack_env(base_env, victim_agent, victim_algo, learned_cfg)
+        # 构建 learned attacker agent。
+        attacker_agent, attacker_info = build_attack_agent(args=args, attack_env=attack_env, device=device)
+        print(attacker_info)
+        print(f"Loaded victim meta: {victim_meta}")
+        # 构造 attacker 训练配置。
+        attacker_train_cfg = build_attacker_train_config(args, learned_cfg)
+        # 启动 attacker 训练。
+        history = run_attacker_training(attack_env, attacker_agent, attacker_train_cfg)
+        # 打印 JSON 摘要，便于命令行和脚本读取。
+        print(json.dumps(history, ensure_ascii=False, indent=2))
+        return
+
+    # victim 任务沿用旧语义：必须显式给出 --algo。
+    if args.algo is None:
+        raise ValueError("--algo is required when --task victim.")
 
     # 启动日志：打印本轮任务配置。
     print(

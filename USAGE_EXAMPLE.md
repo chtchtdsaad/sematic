@@ -95,6 +95,32 @@ pip install numpy scipy matplotlib torch
 - `low_risk_scheduled_ratio_clean`、`low_risk_scheduled_ratio_attack`：clean / attack action 对低风险传感器的调度比例。
 - `high_risk_good_channel_ratio_clean`、`high_risk_good_channel_ratio_attack`：高风险传感器被分配到好信道的比例，用于观察结构性资源错配。
 
+### 2.6 Learned Attacker 训练参数说明
+
+- `--task {victim,attacker}`：运行任务类型。`victim` 保持原 DQN/DDPG 训练或评估；`attacker` 启动 learned meta-attacker 训练。
+- `--victim-algo {DQN,DDPG}`：被攻击的固定 victim scheduler 算法。
+- `--victim-model-path <path>`：victim checkpoint 路径；为空时默认读取 `results/checkpoints/{victim_algo_lower}_{scenario}_seed{seed}_best.pt`。
+- `--attacker-algo DDPG`：learned attacker 算法，第一轮只支持 DDPG。
+- `--attacker-episodes <int>`：attacker 训练 episode 数。
+- `--attacker-episode-length <int>`：attacker 每个 episode 的 step 数，默认 `500`；快速验证可设为 `20` 或 `50`。
+- `--attacker-gamma <float>`：attacker DDPG 的折扣因子。
+- `--attacker-actor-lr <float>`、`--attacker-critic-lr <float>`：attacker Actor/Critic 学习率。
+- `--attacker-tau <float>`：target 网络软更新系数。
+- `--attacker-warmup-steps <int>`：warmup 期间使用随机 continuous intent action。
+- `--attacker-batch-size <int>`、`--attacker-buffer-capacity <int>`、`--attacker-update-interval <int>`：ReplayBuffer 与参数更新控制。
+- `--attacker-noise-std-start <float>`、`--attacker-noise-std-decay <float>`、`--attacker-noise-std-min <float>`：Actor 输出 intent action 后叠加的探索噪声配置。
+- `--attacker-eval-every <int>`：每隔多少个 attacker 训练 episode 做一次 deterministic eval；`0` 表示关闭，开启后不会写 ReplayBuffer、不会更新网络。
+- `--attacker-eval-episodes <int>`：每次 deterministic eval 跑多少个 episode。
+- `--attacker-random-baseline {0,1}`：开启 deterministic eval 时，是否同时运行 random intent baseline；该 baseline 使用同一 `per_step_energy_budget`、`alpha_tau`、`alpha_h`、`aoi_delta`、`h_delta`，用于同 power 对照。
+- `--attacker-reward-clip <float>`：训练写入 ReplayBuffer 前对 raw MSE reward 做上限裁剪；报告仍记录 raw MSE。
+- `--per-step-energy-budget <float>`：每一步离散扰动的能量预算上限。
+- `--alpha-tau <float>`、`--alpha-h <float>`：AoI/H 扰动能量代价系数，能耗为 `alpha_i * delta_i^2`。
+- `--aoi-delta <int>`、`--h-delta <int>`：AoI/H 单维最大整数扰动幅度。
+- `--save-attacker-checkpoints {0,1}`、`--save-attacker-history {0,1}`、`--save-attacker-report {0,1}`：是否保存 attacker checkpoint、history 和 report。
+- `--attacker-result-dir <path>`：attacker 输出根目录，默认 `results/attacker`。
+- learned attacker 使用 raw state，不做状态归一化。
+- learned attacker 不使用 `attack_prob`、`max_attack_ratio`、`max_consecutive_steps`；这些参数只属于 `eval_attack.py` 的规则/启发式攻击评估。
+
 ## 3. 训练命令模板（严格分开）
 
 ### 3.1 仅 DQN 训练命令
@@ -367,4 +393,40 @@ python eval_attack.py --algo DQN --scenario base --seed 24 --device cpu --eval-e
 3. 你在跑 `--algo DQN` 时，`--scenario` 只能是 `base`。  
 4. `--update-interval` 是通用参数，两种算法都生效。  
 5. `--best-select-mode eval` 是通用推荐设置，适合你“best checkpoint 为准”的流程。
+
+## 8. Learned Attacker 训练命令
+
+learned attacker 必须先有 victim checkpoint。若 `--victim-model-path` 为空，程序会按默认 best checkpoint 路径加载；如果文件不存在，会明确报错，不会静默训练随机 victim。
+
+### 8.1 DDPG victim：正式训练
+
+```bash
+python main.py --task attacker --victim-algo DDPG --scenario base --seed 24 --device cpu --victim-model-path results/checkpoints/ddpg_base_seed24_best.pt --attacker-episodes 300 --attacker-eval-every 10 --attacker-eval-episodes 3 --attacker-random-baseline 1 --per-step-energy-budget 2.0 --alpha-tau 1.0 --alpha-h 0.25 --aoi-delta 1 --h-delta 1 --save-attacker-checkpoints 1 --save-attacker-history 1 --save-attacker-report 1
+```
+
+### 8.2 DDPG victim：快速 smoke test
+
+```bash
+python main.py --task attacker --victim-algo DDPG --scenario base --seed 24 --device cpu --victim-model-path results/checkpoints/ddpg_base_seed24_best.pt --attacker-episodes 1 --attacker-episode-length 20 --attacker-warmup-steps 10 --attacker-eval-every 1 --attacker-eval-episodes 1 --attacker-random-baseline 1 --save-attacker-checkpoints 0 --save-attacker-history 0 --save-attacker-report 0
+```
+
+### 8.3 DQN victim：轻量验证
+
+```bash
+python main.py --task attacker --victim-algo DQN --scenario base --seed 24 --device cpu --victim-model-path results/checkpoints/dqn_base_seed24_best.pt --attacker-episodes 1 --attacker-episode-length 20 --attacker-warmup-steps 10 --attacker-eval-every 1 --attacker-eval-episodes 1 --attacker-random-baseline 1 --save-attacker-checkpoints 0 --save-attacker-history 0 --save-attacker-report 0
+```
+
+### 8.4 输出文件
+
+- checkpoint：`results/attacker/checkpoints/attacker_ddpg_vs_{victim_algo}_{scenario}_seed{seed}_best.pt`
+- history：`results/attacker/histories/attacker_ddpg_vs_{victim_algo}_{scenario}_seed{seed}_history.json`
+- report：`results/attacker/reports/attacker_ddpg_vs_{victim_algo}_{scenario}_seed{seed}_report.json`
+
+新增诊断字段：
+
+- `aoi_energy_history`、`h_energy_history`：训练 episode 内 AoI/H 扰动平均能耗，二者之和等于 `energy_used_history`。
+- `aoi_l0_history`、`h_l0_history`：训练 episode 内 AoI/H 平均扰动维度数，二者之和等于 `total_l0_history`。
+- `constraint_violation_count_history`：每个训练 episode 的约束违规次数；正常应为 `0`。
+- `deterministic_eval_history`：按 `--attacker-eval-every` 触发的纯策略评估结果，Actor 使用 `noise_std=0`。
+- `random_intent_baseline_history`：同 power random intent 对照结果；它复用 learned attacker 的 mapping 和能量预算，只把 intent action 换成均匀随机向量。
 

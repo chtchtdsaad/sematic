@@ -1,126 +1,117 @@
-文件作用：记录结构化感知 mislead 与 expected-cost 攻击工作的阶段计划、当前完成状态、关键决策和遗留注意点，方便后续继续开发或审查。
+文件作用：记录 learned meta-attacker 长周期任务的阶段计划、验收闸门、已锁定决策和当前执行状态。
 
-# Task Plan: 结构化感知攻击与 Expected-Cost 基线整理
+# Task Plan: Learned Meta-Attacker 第一轮实现
 
 ## Goal
 
-在 `codex/attack` 分支上完成并固化结构化感知 mislead 攻击、expected-cost 攻击、结构性资源错配指标、CLI 接入、Usage 文档和测试验证。
+在当前 `Remote_Estimation_RL` 项目中新增能量约束 learned DDPG attacker。攻击者只篡改 victim scheduler 的输入观测，不修改真实环境状态；Actor 输出连续扰动意图，环境包装器通过状态依赖能量约束映射生成合法离散扰动；训练目标是提高真实下一步 MSE。
 
-## Current Phase
+## Locked Decisions
 
-Phase 7: 已完成实现与验证，当前处于交付总结和计划文件维护阶段。
+- 第一轮只实现阶段 1-7，不实现 TD3、专家 warm start、完整 mapping 诊断报告。
+- attacker 使用 raw state，不做归一化。
+- victim 覆盖 DQN + DDPG；重点 smoke DDPG，DQN 做轻量可用性验证。
+- ReplayBuffer 存 continuous intent action，不存最终离散 delta。
+- ReplayBuffer 中 reward 只存 clip 后的训练值；history/report 记录 raw MSE。
+- 执行节奏采用阶段闸门式：实现、验证、更新规划文件后再进入下一阶段。
+- 不清理或提交现有 attack report JSON，除非用户单独确认。
+
+## Current Status
+
+Phase 8: complete，已补充 learned attacker 训练诊断：deterministic eval、AoI/H 拆分统计、同 power random intent 对照；明确不做 action flip 统计。
 
 ## Phases
 
-### Phase 1: 结构化感知 Mislead 攻击
+### Phase 0: Planning Files
 
-- [x] 支持 `semantic_aoi_mislead`
-- [x] 支持 `semantic_h_mislead`
-- [x] 支持 `semantic_joint_mislead`
-- [x] DQN/DDPG 都可通过 `eval_attack.py --attack-mode` 调用
-- [x] 攻击只修改 agent 看到的 `attacked_state`，不写回环境真实状态
-- **Status:** complete
+- [x] 运行 `session-catchup.py`
+- [x] 检查当前 git 状态
+- [x] 重建 `task_plan.md`
+- [x] 重建 `findings.md`
+- [x] 重建 `progress.md`
 
-### Phase 2: 公共结构化工具抽取
+### Phase 1: Learned Attack Config
 
-- [x] 新增 `attacks/structural_common.py`
-- [x] 抽取 sensor MSE、sensor risk、H 到成功率映射
-- [x] 抽取 H flatten/unflatten 下标转换
-- [x] 抽取 DQN/DDPG eval action 到 assignment 的统一解码
-- [x] 抽取一步 expected-cost 估计
-- [x] 重写 `attacks/structural_semantic.py`，让它只负责 mislead 攻击，公共逻辑复用 common
-- **Status:** complete
+- [x] 新增 `attacks/learned_attack_config.py`
+- [x] 实现 `LearnedAttackConfig`
+- [x] 实现 `build_learned_attack_config_from_args(args)`
+- [x] 验证 `python -m py_compile attacks/learned_attack_config.py`
 
-### Phase 3: Expected-Cost 攻击
+### Phase 2: Learned Attack Env And SDEC-QM Mapping
 
-- [x] 新增 `attacks/structural_expected.py`
-- [x] 支持 `semantic_aoi_expected_cost`
-- [x] 支持 `semantic_h_expected_cost`
-- [x] 支持 `semantic_joint_expected_cost`
-- [x] 支持 `--expected-cost-mode mse`
-- [x] 支持 `--expected-cost-mode sum_aoi`
-- [x] DQN/DDPG 都支持
-- **Status:** complete
+- [x] 新增 `attacks/learned_attack_env.py`
+- [x] 实现 `LearnedAttackEnv.reset`
+- [x] 实现 `LearnedAttackEnv.step`
+- [x] 实现 `map_intent_to_attacked_state`
+- [x] 验证 py_compile；shape/clip/energy/env 写回将在单元测试中继续覆盖
 
-### Phase 4: 结构性资源错配指标
+### Phase 3: Attack DDPG Agent
 
-- [x] 新增 `attacks/structural_metrics.py`
-- [x] 计算 clean / attack selected risk sum
-- [x] 计算 `resource_misallocation_score`
-- [x] 计算 high/low risk scheduled ratio
-- [x] 计算 high-risk good-channel ratio
-- [x] 接入 `attacks/metrics.py` 汇总
-- [x] 接入 `eval_attack.py` 报告字段
-- **Status:** complete
+- [x] 新增 `attacks/attack_agent.py`
+- [x] 实现 `AttackActor`
+- [x] 实现 `AttackCritic`
+- [x] 实现 `AttackDDPGAgent`
+- [x] 验证 select_action shape/range；update loss 将在单元测试中覆盖
 
-### Phase 5: CLI 与文档
+### Phase 4: Training Loop
 
-- [x] `eval_attack.py --attack-mode` 增加 mislead 和 expected-cost 模式
-- [x] 新增 `--expected-cost-mode {mse,sum_aoi}`，默认 `mse`
-- [x] `USAGE_EXAMPLE.md` 增加攻击参数说明
-- [x] `USAGE_EXAMPLE.md` 增加 clean / attack 报告字段说明
-- [x] `USAGE_EXAMPLE.md` 增加结构化感知 mislead 的 DQN/DDPG 命令
-- [x] `USAGE_EXAMPLE.md` 增加 expected-cost 的 DQN/DDPG 命令
-- **Status:** complete
+- [x] 在 `train.py` 新增 attacker checkpoint 函数
+- [x] 在 `train.py` 新增 `run_attacker_training`
+- [x] 训练过程使用 raw state 和 continuous intent action
+- [x] history 记录 raw MSE、energy；ReplayBuffer 存 clipped reward
 
-### Phase 6: 测试与验证
+### Phase 5: Workflow Builders
 
-- [x] 新增 `tests/test_structural_expected_and_metrics.py`
-- [x] 更新 DDPG raw-state 动作选择测试
-- [x] 更新 AttackConfig 字段测试
-- [x] 更新 cooldown 行为测试
-- [x] 更新 eval_attack 集成测试
-- [x] 完整 pytest 通过
-- [x] py_compile 通过
-- [x] DQN/DDPG joint mislead smoke 通过
-- [x] DQN/DDPG joint expected-cost smoke 通过
-- **Status:** complete
+- [x] 在 `workflow.py` 新增 `build_victim_for_attack`
+- [x] 在 `workflow.py` 新增 `build_learned_attack_env`
+- [x] 在 `workflow.py` 新增 `build_attack_agent`
+- [x] 在 `workflow.py` 新增 `build_attacker_train_config`
+- [x] victim checkpoint 缺失时明确报错
+- [x] victim 参数冻结并切换 eval
 
-### Phase 7: 分支整理与计划文件维护
+### Phase 6: Main CLI
 
-- [x] 当前分支确认：`codex/attack`
-- [x] 当前分支相对 `origin/codex/attack` ahead 2
-- [x] 两个本地提交记录了本轮核心实现
-- [x] 创建并维护 `task_plan.md`
-- [x] 创建并维护 `findings.md`
-- [x] 创建并维护 `progress.md`
-- **Status:** complete
+- [x] 在 `main.py` 新增 `--task {victim,attacker}`
+- [x] `task=victim` 保持原训练/评估主链路
+- [x] `task=attacker` 接入 learned attacker 训练
+- [x] 缺失 checkpoint 明确报错
 
-## Key Questions
+### Phase 7: Usage And Tests
 
-1. 结构化感知 mislead 攻击是否还能用？
-   - 是。`eval_attack.py` 仍支持 `semantic_aoi_mislead`、`semantic_h_mislead`、`semantic_joint_mislead`，并且 smoke 已验证 joint mislead 可运行。
-2. `USAGE_EXAMPLE.md` 里结构化感知攻击为什么一度看不到？
-   - 是文档整理时漏掉了专门章节，不是代码不可用。现在已补回 DQN/DDPG mislead 命令和含义说明。
-3. DDPG 是否使用 `_normalize_state_for_ddpg`？
-   - 不使用。`attacks/action_utils.py` 直接使用 eval_attack 传入的 raw state。
-4. 当前是否已经提交？
-   - 当前分支 `codex/attack` 已 ahead 2，最新提交包括 `5a9e7f2` 和 `c59fbf9`。但当前仍有 8 个 attack report JSON 处于 staged 状态，另有 2 个 joint expected-cost report JSON 未跟踪。
+- [x] 更新 `USAGE_EXAMPLE.md`
+- [x] 新增 learned attacker 单元测试
+- [x] 运行 py_compile
+- [x] 运行 pytest
+- [x] 运行 victim smoke
+- [x] 运行 DDPG attacker smoke
+- [x] 运行 DQN attacker smoke 或轻量验证
 
-## Decisions Made
+### Phase 8: Learned Attacker Diagnostics
 
-| Decision | Rationale |
-|----------|-----------|
-| 将公共结构化逻辑抽到 `structural_common.py` | 避免 mislead 和 expected-cost 各写一套 risk/H/action decode |
-| `structural_semantic.py` 只负责 mislead 攻击 | 文件职责更清楚，后续调试更容易 |
-| `structural_expected.py` 单独保存 expected-cost 攻击 | expected-cost 候选生成和 victim policy scoring 复杂度较高，需要隔离 |
-| `structural_metrics.py` 单独保存解释指标 | 指标计算与攻击生成解耦，报告字段更清晰 |
-| expected-cost 默认 `mse`，可选 `sum_aoi` | `mse` 对齐主评价指标，`sum_aoi` 作为轻量代理目标 |
-| DDPG 使用 raw state | 用户明确要求，且测试已覆盖 |
-| cooldown 逻辑实际生效 | 文档和 CLI 已暴露 `--cooldown-steps`，代码必须一致 |
+- [x] 在 mapping info 中补充 `aoi_energy` / `h_energy`
+- [x] 在 attacker 训练 history/report 中记录 AoI/H 拆分 L0 与能耗
+- [x] 新增 deterministic eval 诊断，Actor 使用 `noise_std=0`
+- [x] 新增 random intent baseline，对照使用同一 `per_step_energy_budget`、`alpha_tau`、`alpha_h`、`aoi_delta`、`h_delta`
+- [x] deterministic eval 与 random baseline 不写入 ReplayBuffer，不更新网络
+- [x] 评估前后恢复环境运行状态，避免诊断评估消耗训练环境 RNG
+- [x] 更新 CLI、Usage 文档和单元测试
+
+## Acceptance Commands
+
+```powershell
+python -m py_compile attacks/learned_attack_config.py attacks/learned_attack_env.py attacks/attack_agent.py train.py workflow.py main.py
+python -m pytest -q
+python main.py --task victim --algo DDPG --scenario base --mode train --seed 7 --episodes 1 --device cpu --save-checkpoints 0 --save-history 0 --save-plots 0
+python main.py --task attacker --victim-algo DDPG --scenario base --seed 24 --device cpu --attacker-episodes 1 --attacker-warmup-steps 10 --save-attacker-checkpoints 0 --save-attacker-history 0
+python main.py --task attacker --victim-algo DQN --scenario base --seed 24 --device cpu --attacker-episodes 1 --attacker-warmup-steps 10 --save-attacker-checkpoints 0 --save-attacker-history 0
+python main.py --task attacker --victim-algo DDPG --scenario base --seed 24 --device cpu --attacker-episodes 1 --attacker-episode-length 20 --attacker-eval-every 1 --attacker-eval-episodes 1 --attacker-random-baseline 1 --save-attacker-checkpoints 0 --save-attacker-history 0 --save-attacker-report 0
+```
 
 ## Errors Encountered
 
-| Error | Attempt | Resolution |
-|-------|---------|------------|
-| Prompt 4-8 实现最初未完整落在 `codex/attack` | 1 | 在 `codex/attack` 上重新整理 common/expected/metrics 和测试 |
-| `main` 上曾有不完整提交，import 了缺失模块 | 1 | 不直接合并 broken 状态，改为在 `codex/attack` 完整补齐 |
-| `USAGE_EXAMPLE.md` 漏掉结构化感知 mislead 专门章节 | 1 | 已补回 DQN/DDPG mislead 命令和含义说明 |
-| `git reset` / `git restore --staged` 曾遇到 `.git/index.lock` 权限问题 | 1 | 保留代码内容，后续由用户决定是否调整 staged 状态 |
-| 验证生成 `.pyc` 和临时报告 | 1 | `.pyc` 已清理；当前仍有 8 个 attack report JSON staged，2 个 joint expected-cost report JSON untracked |
-
-## Notes
-
-- 当前 `codex/attack` 分支 ahead 2。
-- 当前 staged 区域有 8 个 `results/attack_reports/*.json` 文件，另有 2 个 joint expected-cost report JSON 未跟踪，是否保留进提交需要用户决定。
-- 当前代码实现和文档已经可用，结构化感知 mislead 并没有被废弃。
+| Time | Error | Attempt | Resolution |
+| --- | --- | --- | --- |
+| 2026-05-18 | `task_plan.md/findings.md/progress.md` 显示为 deleted | 1 | 按本任务重建专题规划文件 |
+| 2026-05-18 | Windows OpenMP runtime 重复加载导致 smoke 首次失败 | 1 | 仅在 smoke 进程内设置 `KMP_DUPLICATE_LIB_OK=TRUE` 后验证通过，不写入代码 |
+| 2026-05-18 | `git restore` 恢复 tracked `.pyc` 时 `.git/index.lock` 权限失败 | 2 | 使用 `git checkout-index -f -- ...` 恢复 tracked `.pyc` 验证产物 |
+| 2026-05-19 | `conda activate rse_dq3; python -m pytest ...` 落到系统 Python 且无 pytest | 1 | 改用 `C:\Users\28681\anaconda3\envs\rse_dq3\python.exe` 直接调用测试函数；记录 pytest 环境缺失 |
