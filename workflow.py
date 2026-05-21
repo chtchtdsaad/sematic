@@ -18,7 +18,6 @@ import numpy as np
 import torch
 
 from agent import DDPGAgent, DQNAgent
-from attacks.learned_attack_config import LearnedAttackConfig, build_learned_attack_config_from_args
 from config import (
     BATCH_SIZE,
     DDPG_ACTOR_LR,
@@ -26,6 +25,7 @@ from config import (
     DDPG_CRITIC_LR,
     DDPG_CRITIC_LR_END,
     DDPG_REWARD_CLIP,
+    DDPG_REWARD_SCALE,
     DDPG_WARMUP_STEPS,
     DQN_WARMUP_STEPS,
     EPISODE_LENGTH,
@@ -221,6 +221,7 @@ def build_train_config(args: argparse.Namespace) -> dict[str, object]:
         "dqn_warmup_steps": dqn_warmup_steps,  # int
         "ddpg_warmup_steps": ddpg_warmup_steps,  # int
         "ddpg_reward_clip": DDPG_REWARD_CLIP,  # float
+        "ddpg_reward_scale": DDPG_REWARD_SCALE,  # float
         "update_interval": max(1, int(args.update_interval)),  # int
         "best_select_mode": str(args.best_select_mode),  # str
         "best_eval_every": max(1, int(args.best_eval_every)),  # int
@@ -230,246 +231,6 @@ def build_train_config(args: argparse.Namespace) -> dict[str, object]:
         "save_prefix": f"{str(args.algo).lower()}_{str(args.scenario)}_seed{args.seed}",  # str
         "save_best": bool(args.save_checkpoints),  # bool
         "save_last": bool(args.save_checkpoints),  # bool
-    }
-
-
-def _default_victim_checkpoint_path(victim_algo: str, scenario: str, seed: int) -> Path:
-    """
-    作用:
-        构造 learned attacker 默认使用的 victim best checkpoint 路径。
-
-    输入格式:
-        victim_algo: str，"DQN" 或 "DDPG"。
-        scenario: str，场景名。
-        seed: int，随机种子。
-
-    输出格式:
-        Path，形如 results/checkpoints/ddpg_base_seed24_best.pt。
-
-    参数含义:
-        victim_algo 决定文件名前缀；scenario/seed 决定具体实验配置。
-
-    核心步骤:
-        1. 将算法名转小写。
-        2. 按项目既有 checkpoint 命名规则拼接路径。
-    """
-    # victim checkpoint 继续使用现有 results/checkpoints 目录。
-    return Path("results/checkpoints") / f"{str(victim_algo).lower()}_{scenario}_seed{seed}_best.pt"
-
-
-def _freeze_victim_agent(victim_agent) -> None:
-    """
-    作用:
-        冻结 victim agent 的网络参数并切换 eval 模式。
-
-    输入格式:
-        victim_agent: DQNAgent 或 DDPGAgent。
-
-    输出格式:
-        None。
-
-    参数含义:
-        victim_agent 是被攻击的固定调度器，不允许在 attacker training 中被更新。
-
-    核心步骤:
-        1. 遍历 victim 可能包含的网络属性。
-        2. 对每个网络关闭梯度。
-        3. 对每个网络调用 eval()。
-    """
-    # 覆盖 DQN 和 DDPG 的所有网络属性。
-    module_names = ("q_net", "target_q_net", "actor", "actor_target", "critic", "critic_target")
-    # 遍历每个候选属性。
-    for module_name in module_names:
-        # 某些属性只存在于 DQN 或 DDPG，因此使用 getattr 防御性读取。
-        module = getattr(victim_agent, module_name, None)
-        # 属性不存在时跳过。
-        if module is None:
-            continue
-        # eval 模式关闭 dropout/bn 等训练行为，虽然当前 MLP 没有这些层，也保持语义明确。
-        module.eval()
-        # 关闭所有参数梯度，确保 attacker 训练不会更新 victim。
-        for param in module.parameters():
-            param.requires_grad_(False)
-
-
-def build_victim_for_attack(args: argparse.Namespace, device: torch.device):
-    """
-    作用:
-        构建并加载固定 victim scheduler，供 learned attacker 训练使用。
-
-    输入格式:
-        args: argparse.Namespace，需包含 victim_algo、victim_model_path、scenario、seed。
-        device: torch.device。
-
-    输出格式:
-        tuple[base_env, victim_agent, victim_algo, victim_meta]。
-
-    参数含义:
-        victim_algo 决定 DQN/DDPG；victim_model_path 为空时使用默认 best checkpoint。
-
-    核心步骤:
-        1. 用 victim_algo 构建真实环境。
-        2. 用现有 build_agent 构建 victim agent。
-        3. 加载 victim checkpoint，缺失时明确报错。
-        4. 冻结 victim 参数并切换 eval 模式。
-        5. 返回环境、agent、算法名和 checkpoint meta。
-    """
-    # 延迟导入可避免 workflow 顶部依赖 train 的保存逻辑。
-    from train import load_checkpoint
-
-    # victim 算法统一大写。
-    victim_algo = str(getattr(args, "victim_algo", "DDPG")).upper()
-    # 只支持已有 victim DQN/DDPG。
-    if victim_algo not in {"DQN", "DDPG"}:
-        raise ValueError("victim_algo must be 'DQN' or 'DDPG'.")
-    # 复用 build_env，DQN 自动构造 action_space，DDPG 不构造离散动作全集。
-    base_env = build_env(seed=int(args.seed), scenario=str(args.scenario), algo=victim_algo)
-    # build_agent 读取 args.algo，因此复制 Namespace 并覆盖为 victim_algo。
-    victim_args = argparse.Namespace(**vars(args))
-    # 设置 algo 字段，让现有 build_agent 无需改动即可构建 victim。
-    victim_args.algo = victim_algo
-    # build_agent 的 DDPG 分支需要 episodes 字段，这里给一个安全值。
-    if not hasattr(victim_args, "episodes") or victim_args.episodes is None:
-        victim_args.episodes = max(1, int(getattr(args, "attacker_episodes", 1)))
-    # build_agent 的 DDPG 分支读取这些可选学习率字段，缺失时补 None。
-    if not hasattr(victim_args, "ddpg_actor_lr"):
-        victim_args.ddpg_actor_lr = None
-    if not hasattr(victim_args, "ddpg_critic_lr"):
-        victim_args.ddpg_critic_lr = None
-    # 构建 victim agent。
-    victim_agent, _agent_info = build_agent(args=victim_args, env=base_env, device=device)
-    # 用户指定路径优先；为空时使用默认 best checkpoint。
-    ckpt_path = Path(args.victim_model_path) if str(getattr(args, "victim_model_path", "")) else _default_victim_checkpoint_path(victim_algo, str(args.scenario), int(args.seed))
-    # checkpoint 不存在时明确报错，禁止静默训练随机 victim。
-    if not ckpt_path.exists():
-        raise FileNotFoundError(f"Victim checkpoint not found: {ckpt_path.resolve()}")
-    # 加载 victim checkpoint。
-    victim_meta = load_checkpoint(victim_algo, victim_agent, ckpt_path, map_location=device)
-    # 冻结 victim 网络，确保 attacker 训练只更新 attacker。
-    _freeze_victim_agent(victim_agent)
-    # 返回构建结果。
-    return base_env, victim_agent, victim_algo, victim_meta
-
-
-def build_learned_attack_env(base_env, victim_agent, victim_algo: str, learned_attack_config: LearnedAttackConfig):
-    """
-    作用:
-        构建 LearnedAttackEnv 包装器。
-
-    输入格式:
-        base_env: SemanticSchedulingEnv。
-        victim_agent: 固定 victim agent。
-        victim_algo: str，"DQN" 或 "DDPG"。
-        learned_attack_config: LearnedAttackConfig。
-
-    输出格式:
-        LearnedAttackEnv 实例。
-
-    参数含义:
-        learned_attack_config 提供映射预算和扰动幅度。
-
-    核心步骤:
-        1. 延迟导入 LearnedAttackEnv。
-        2. 传入真实环境、victim 和配置。
-    """
-    # 延迟导入减少 workflow 顶部依赖。
-    from attacks.learned_attack_env import LearnedAttackEnv
-
-    # 直接构建 learned attacker 环境包装器。
-    return LearnedAttackEnv(base_env=base_env, victim_agent=victim_agent, victim_algo=victim_algo, config=learned_attack_config)
-
-
-def build_attack_agent(args: argparse.Namespace, attack_env, device: torch.device):
-    """
-    作用:
-        构建 AttackDDPGAgent。
-
-    输入格式:
-        args: argparse.Namespace，包含 attacker 学习率、gamma、tau 等字段。
-        attack_env: LearnedAttackEnv。
-        device: torch.device。
-
-    输出格式:
-        tuple[AttackDDPGAgent, str]。
-
-    参数含义:
-        attack_env 提供 state_dim/action_dim；args 提供训练超参数。
-
-    核心步骤:
-        1. 从 args 构建 LearnedAttackConfig。
-        2. 使用 AttackDDPGAgent 构建 attacker。
-        3. 返回 agent 和日志字符串。
-    """
-    # 延迟导入 attacker agent，避免普通 victim 训练无谓加载。
-    from attacks.attack_agent import AttackDDPGAgent
-
-    # 从 CLI 参数构造 learned attacker 配置。
-    cfg = build_learned_attack_config_from_args(args)
-    # 第一轮只支持 DDPG attacker。
-    if cfg.attacker_algo != "DDPG":
-        raise ValueError("Only DDPG attacker is supported in the first implementation.")
-    # 构建 learned attacker agent。
-    agent = AttackDDPGAgent(
-        state_dim=int(attack_env.state_dim),
-        action_dim=int(attack_env.action_dim),
-        gamma=float(cfg.attacker_gamma),
-        actor_lr=float(cfg.attacker_actor_lr),
-        critic_lr=float(cfg.attacker_critic_lr),
-        tau=float(cfg.attacker_tau),
-        grad_clip_norm=float(cfg.attacker_grad_clip_norm),
-        device=device,
-    )
-    # 返回构建日志。
-    return agent, f"AttackDDPG initialized. state_dim={attack_env.state_dim}, action_dim={attack_env.action_dim}"
-
-
-def build_attacker_train_config(args: argparse.Namespace, learned_attack_config: LearnedAttackConfig) -> dict[str, object]:
-    """
-    作用:
-        构造 run_attacker_training 所需配置字典。
-
-    输入格式:
-        args: argparse.Namespace。
-        learned_attack_config: LearnedAttackConfig。
-
-    输出格式:
-        dict[str,object]，键值全部为 run_attacker_training 可识别字段。
-
-    参数含义:
-        args 提供 CLI 可覆盖字段；learned_attack_config 提供 dataclass 默认值。
-
-    核心步骤:
-        1. 读取 attacker episode、batch、warmup 等训练参数。
-        2. 读取 reward clip 和 deterministic eval 参数。
-        3. 写入保存开关和文件命名元信息。
-    """
-    # 为了简洁，使用局部变量 cfg 表示 learned attacker 配置。
-    cfg = learned_attack_config
-    # episode length 默认 500，smoke test 可用 --attacker-episode-length 缩短。
-    episode_length = int(getattr(args, "attacker_episode_length", EPISODE_LENGTH))
-    # 返回训练配置字典。
-    return {
-        "episodes": int(cfg.attacker_episodes),
-        "episode_length": episode_length,
-        "batch_size": int(cfg.attacker_batch_size),
-        "replay_buffer_capacity": int(cfg.attacker_buffer_capacity),
-        "warmup_steps": int(cfg.attacker_warmup_steps),
-        "update_interval": max(1, int(cfg.attacker_update_interval)),
-        "noise_std_start": float(cfg.attacker_noise_std_start),
-        "noise_std_decay": float(cfg.attacker_noise_std_decay),
-        "noise_std_min": float(cfg.attacker_noise_std_min),
-        "reward_clip": float(getattr(args, "attacker_reward_clip", DDPG_REWARD_CLIP)),
-        "attacker_eval_every": max(0, int(cfg.attacker_eval_every)),
-        "attacker_eval_episodes": max(1, int(cfg.attacker_eval_episodes)),
-        "attacker_random_baseline": bool(cfg.attacker_random_baseline),
-        "save_checkpoints": bool(cfg.save_attacker_checkpoints),
-        "save_history": bool(cfg.save_attacker_history),
-        "save_report": bool(cfg.save_attacker_report),
-        "scenario": str(args.scenario),
-        "seed": int(args.seed),
-        "victim_algo": str(cfg.victim_algo).upper(),
-        "attacker_result_dir": str(cfg.attacker_result_dir),
-        "verbose_interval": int(getattr(args, "attacker_verbose_interval", 1)),
     }
 
 
