@@ -36,7 +36,7 @@ en = 1  # 单个传感器观测维度（y_n,t 维度）
 # 量化信道对应的丢包率（5档）
 # 索引 0..4 对应离散信道状态 h_t
 # -----------------------------
-PACKET_LOSS_LEVELS = np.array([0.2, 0.15, 0.1, 0.05, 0.01], dtype=np.float64)
+PACKET_LOSS_LEVELS = np.array([0.5, 0.4, 0.2, 0.1, 0.01], dtype=np.float64)
 NUM_CHANNEL_STATES = int(PACKET_LOSS_LEVELS.size)
 
 # -----------------------------

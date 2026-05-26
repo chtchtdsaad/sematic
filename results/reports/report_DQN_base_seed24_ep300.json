@@ -15,62 +15,62 @@
   "ddpg_critic_lr": null,
   "noise_std_decay": null,
   "best_metric_source": "eval",
-  "best_metric_value": 82.439,
+  "best_metric_value": 88.779,
   "best_model_path": "C:\\Users\\28681\\Desktop\\Kalman\\sematic\\results\\checkpoints\\dqn_base_seed24_best.pt",
   "last_model_path": "C:\\Users\\28681\\Desktop\\Kalman\\sematic\\results\\checkpoints\\dqn_base_seed24_last.pt",
-  "train_seconds": 414.6047,
+  "train_seconds": 265.2325,
   "train_end_selection_stats": {
     "per_channel_selected_sensor_aoi_mean": [
-      2.2894,
-      2.1369,
-      2.0997
+      2.539,
+      2.3928,
+      2.2754
     ],
     "per_sensor_selected_count": [
-      71678,
-      72657,
-      64672,
-      84366,
-      59115,
-      97512
+      71800,
+      70669,
+      68547,
+      83706,
+      59776,
+      95502
     ],
     "per_sensor_avg_aoi_when_selected": [
-      2.2739,
-      2.2257,
-      2.5928,
-      1.9216,
-      2.7118,
-      1.6826
+      2.4855,
+      2.4452,
+      2.9168,
+      2.0877,
+      2.9022,
+      1.902
     ],
     "sensor_channel_count": [
       [
-        19089,
-        30382,
-        22207
+        15878,
+        38962,
+        16960
       ],
       [
-        25525,
-        22375,
-        24757
+        15641,
+        29461,
+        25567
       ],
       [
-        32513,
-        19352,
-        12807
+        43814,
+        16003,
+        8730
       ],
       [
-        20907,
-        42358,
-        21101
+        14207,
+        38491,
+        31008
       ],
       [
-        25777,
-        13074,
-        20264
+        35398,
+        9335,
+        15043
       ],
       [
-        26189,
-        22459,
-        48864
+        25062,
+        17748,
+        52692
       ]
     ]
   },
